@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "g1-locomotion"
+version = "0.1.0"
+description = "Unitree G1 locomotion and projectile-catching tasks for NVIDIA Isaac Lab"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "BSD-3-Clause" }
+authors = [{ name = "G1 Locomotion contributors" }]
+
+[tool.setuptools]
+package-dir = { "" = "source" }
+
+[tool.setuptools.packages.find]
+where = ["source"]

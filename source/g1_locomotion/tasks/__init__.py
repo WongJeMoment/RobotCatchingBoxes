@@ -11,19 +11,23 @@ import gymnasium as gym
 # 注册任务
 def _register(task_id: str, env_cfg: str, agent_cfg: str) -> None:
     """Register a task once, making repeated imports harmless."""
+    # 防止重复注册
     if task_id in gym.registry:
         return
+    # 调用 gym.register
     gym.register(
         id=task_id,
         entry_point="isaaclab.envs:ManagerBasedRLEnv",
         disable_env_checker=True,
         kwargs={
+            # 环境配置
             "env_cfg_entry_point": env_cfg,
+            # 代理配置
             "rsl_rl_cfg_entry_point": agent_cfg,
         },
     )
 
-
+# 配置模块路径
 _ENV_MODULE = "g1_locomotion.tasks.velocity.g1_env_cfg"
 _AGENT_MODULE = "g1_locomotion.tasks.velocity.agents.rsl_rl_ppo_cfg"
 

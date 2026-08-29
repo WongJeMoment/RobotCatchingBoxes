@@ -52,8 +52,11 @@ def _has_option(name: str) -> bool:
 
 def run_upstream(script_name: str, default_task: str) -> None:
     """Register local tasks and execute Isaac Lab's RSL-RL workflow."""
+    # Find the Isaac Lab root and the upstream script to run.
     isaaclab_root = _find_isaaclab_root(_pop_option("--isaaclab-path"))
+    # Add the Isaac Lab RSL-RL runner to sys.path so that it can be imported.
     runner_dir = isaaclab_root / "scripts" / "reinforcement_learning" / "rsl_rl"
+    # Add the upstream script to sys.path so that it can be imported.
     runner = runner_dir / script_name
     if not runner.is_file():
         raise SystemExit(

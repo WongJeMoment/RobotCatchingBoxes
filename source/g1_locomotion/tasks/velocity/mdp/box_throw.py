@@ -77,6 +77,9 @@ def throw_random_box(
     spawn_height_offset_range: tuple[float, float] = (-0.15, 0.35),
     horizontal_aim_noise: float = 0.15,
     angular_velocity_range: tuple[float, float] = (-6.0, 6.0),
+    max_object_id: int | None = None,
+    upright_orientation: bool = False,
+    orientation_rpy_range: tuple[float, float] = (-0.20, 0.20),
     gravity_z: float = -9.81,
     parking_depth: float = -20.0,
 ) -> None:
@@ -117,11 +120,20 @@ def throw_random_box(
     linear_velocity = (target - spawn) / flight_time.unsqueeze(-1)
     linear_velocity[:, 2] -= 0.5 * gravity_z * flight_time
     angular_velocity = _uniform(angular_velocity_range, (num_envs, 3), device)
-    orientations = math_utils.random_orientation(num=num_envs, device=device)
+    if upright_orientation:
+        orientation_rpy = _uniform(orientation_rpy_range, (num_envs, 3), device)
+        orientations = math_utils.quat_from_euler_xyz(
+            orientation_rpy[:, 0], orientation_rpy[:, 1], orientation_rpy[:, 2]
+        )
+    else:
+        orientations = math_utils.random_orientation(num=num_envs, device=device)
 
     # The collection API selects a Cartesian product of env and object IDs.
     # Grouping by size gives pairwise random choices without looping over envs.
-    selected_object_ids = torch.randint(boxes.num_objects, (num_envs,), device=device)
+    if max_object_id is None:
+        max_object_id = boxes.num_objects - 1
+    max_object_id = min(max(0, max_object_id), boxes.num_objects - 1)
+    selected_object_ids = torch.randint(max_object_id + 1, (num_envs,), device=device)
     env._active_throw_box_ids[resolved_env_ids] = selected_object_ids
     for object_id in range(boxes.num_objects):
         selection = selected_object_ids == object_id
@@ -140,3 +152,69 @@ def throw_random_box(
             env_ids=selected_env_ids,
             object_ids=object_ids,
         )
+
+
+def _lerp_range(
+    easy: tuple[float, float],
+    hard: tuple[float, float],
+    progress: float,
+) -> tuple[float, float]:
+    """Linearly interpolate a scalar range for the launch curriculum."""
+    return (
+        easy[0] + progress * (hard[0] - easy[0]),
+        easy[1] + progress * (hard[1] - easy[1]),
+    )
+
+
+def throw_curriculum_box(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    collection_name: str = "throw_boxes",
+    robot_name: str = "robot",
+    balance_warmup_steps: int = 20_000,
+    curriculum_steps: int = 100_000,
+    gravity_z: float = -9.81,
+    parking_depth: float = -20.0,
+) -> None:
+    """Launch progressively harder boxes as the policy learns the catch motion.
+
+    Training starts with a balance-only warm-up, followed by a slowly moving,
+    axis-aligned 0.5 kg box near the centerline.  The launch cone, speed,
+    orientation, spin and available box sizes then expand continuously. Medium
+    boxes enter after 25% of the catch schedule and the 3 kg box after 65%.
+    """
+    if env.common_step_counter < balance_warmup_steps:
+        # Let PPO first discover a stable standing/recovery controller.  The
+        # catch terminations explicitly ignore this inactive (-1) box state.
+        park_throw_boxes(env, env_ids, collection_name, parking_depth)
+        env._catch_curriculum_progress = 0.0
+        env._catch_curriculum_stage = "balance"
+        return
+
+    catch_step = env.common_step_counter - balance_warmup_steps
+    progress = min(max(float(catch_step) / max(curriculum_steps, 1), 0.0), 1.0)
+    max_object_id = 0 if progress < 0.25 else (1 if progress < 0.65 else 2)
+    angular_speed = 0.15 + 1.35 * progress
+    orientation_angle = 0.02 + 0.20 * progress
+
+    # Expose the scalar for diagnostics without adding it to the policy input.
+    env._catch_curriculum_progress = progress
+    env._catch_curriculum_stage = "catch"
+    throw_random_box(
+        env,
+        env_ids,
+        collection_name=collection_name,
+        robot_name=robot_name,
+        azimuth_range=_lerp_range((-0.05, 0.05), (-0.22, 0.22), progress),
+        distance_range=_lerp_range((0.75, 0.95), (1.00, 1.45), progress),
+        flight_time_range=_lerp_range((0.90, 1.10), (0.55, 0.75), progress),
+        target_height_offset_range=_lerp_range((0.18, 0.28), (0.20, 0.42), progress),
+        spawn_height_offset_range=_lerp_range((-0.02, 0.06), (-0.05, 0.20), progress),
+        horizontal_aim_noise=0.015 + 0.065 * progress,
+        angular_velocity_range=(-angular_speed, angular_speed),
+        max_object_id=max_object_id,
+        upright_orientation=True,
+        orientation_rpy_range=(-orientation_angle, orientation_angle),
+        gravity_z=gravity_z,
+        parking_depth=parking_depth,
+    )

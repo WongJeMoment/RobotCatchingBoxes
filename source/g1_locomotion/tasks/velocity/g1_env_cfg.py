@@ -22,6 +22,8 @@ from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import Ev
 from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import TerminationsCfg as VelocityTerminationsCfg
 from isaaclab_assets import G1_CFG
 
+from g1_locomotion.robots import G1_23DOF_FIXED_HAND_CFG
+
 from . import mdp
 
 
@@ -70,6 +72,45 @@ _PALM_NAMES = ["left_palm_link", "right_palm_link"]
 _LEFT_HAND_PATTERN = "left_(palm|five|three|zero|six|four|one|two)_link"
 _RIGHT_HAND_PATTERN = "right_(palm|five|three|zero|six|four|one|two)_link"
 
+# Exact order used by the fixed-hand training policy.  Listing every joint
+# avoids asset-order changes silently invalidating a checkpoint or sim2sim map.
+_FIXED_HAND_LOWER_JOINT_NAMES = [
+    "left_hip_pitch_joint",
+    "right_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "right_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "right_hip_yaw_joint",
+    "left_knee_joint",
+    "right_knee_joint",
+    "left_ankle_pitch_joint",
+    "right_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_ankle_roll_joint",
+]
+_FIXED_HAND_UPPER_JOINT_NAMES = [
+    "waist_yaw_joint",
+    "left_shoulder_pitch_joint",
+    "right_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "right_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "right_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "right_elbow_joint",
+    "left_wrist_roll_joint",
+    "right_wrist_roll_joint",
+]
+_FIXED_HAND_WHOLE_BODY_JOINT_NAMES = [
+    *_FIXED_HAND_LOWER_JOINT_NAMES,
+    *_FIXED_HAND_UPPER_JOINT_NAMES,
+]
+_FIXED_HAND_BODY_NAMES = [
+    "left_wrist_roll_rubber_hand",
+    "right_wrist_roll_rubber_hand",
+]
+_FIXED_HAND_CENTER_OFFSET = 0.108
+
 
 def _catch_joint_cfg() -> SceneEntityCfg:
     return SceneEntityCfg("robot", joint_names=_CATCH_JOINT_NAMES, preserve_order=True)
@@ -93,6 +134,46 @@ def _left_hand_sensor_cfg() -> SceneEntityCfg:
 
 def _right_hand_sensor_cfg() -> SceneEntityCfg:
     return SceneEntityCfg("contact_forces", body_names=_RIGHT_HAND_PATTERN)
+
+
+def _fixed_hand_lower_joint_cfg() -> SceneEntityCfg:
+    return SceneEntityCfg(
+        "robot", joint_names=_FIXED_HAND_LOWER_JOINT_NAMES, preserve_order=True
+    )
+
+
+def _fixed_hand_upper_joint_cfg() -> SceneEntityCfg:
+    return SceneEntityCfg(
+        "robot", joint_names=_FIXED_HAND_UPPER_JOINT_NAMES, preserve_order=True
+    )
+
+
+def _fixed_hand_whole_body_joint_cfg() -> SceneEntityCfg:
+    return SceneEntityCfg(
+        "robot", joint_names=_FIXED_HAND_WHOLE_BODY_JOINT_NAMES, preserve_order=True
+    )
+
+
+def _fixed_hand_body_cfg() -> SceneEntityCfg:
+    return SceneEntityCfg("robot", body_names=_FIXED_HAND_BODY_NAMES, preserve_order=True)
+
+
+def _fixed_left_hand_sensor_cfg() -> SceneEntityCfg:
+    return SceneEntityCfg(
+        "contact_forces", body_names="left_wrist_roll_rubber_hand"
+    )
+
+
+def _fixed_right_hand_sensor_cfg() -> SceneEntityCfg:
+    return SceneEntityCfg(
+        "contact_forces", body_names="right_wrist_roll_rubber_hand"
+    )
+
+
+def _fixed_feet_sensor_cfg() -> SceneEntityCfg:
+    return SceneEntityCfg(
+        "contact_forces", body_names=".*_ankle_roll_link", preserve_order=True
+    )
 
 
 @configclass
@@ -808,3 +889,312 @@ class G1WholeBodyCatchBoxPlayEnvCfg(G1WholeBodyCatchBoxEnvCfg):
         self.observations.policy.enable_corruption = False
         # Show the stable hold for longer before the successful episode resets.
         self.terminations.box_caught.params["hold_time_s"] = 1.0
+
+
+@configclass
+class G1FixedHandCatchEventsCfg(VelocityEventCfg):
+    """Reset events with a staged fixed-hand catching curriculum."""
+
+    launch_box = EventTerm(
+        func=mdp.throw_curriculum_box,
+        mode="reset",
+        params={
+            "collection_name": "throw_boxes",
+            "robot_name": "robot",
+            "balance_warmup_steps": 20_000,
+            "curriculum_steps": 100_000,
+            "gravity_z": -9.81,
+            "parking_depth": -20.0,
+        },
+    )
+
+
+@configclass
+class G1FixedHandWholeBodyActionsCfg:
+    """Residual position targets for the true 23-DoF fixed-hand robot."""
+
+    lower_body = base_mdp.JointPositionActionCfg(
+        asset_name="robot",
+        joint_names=_FIXED_HAND_LOWER_JOINT_NAMES,
+        scale=0.25,
+        use_default_offset=True,
+        preserve_order=True,
+    )
+    upper_body = base_mdp.JointPositionActionCfg(
+        asset_name="robot",
+        joint_names=_FIXED_HAND_UPPER_JOINT_NAMES,
+        scale={
+            "waist_yaw_joint": 0.45,
+            ".*_shoulder_pitch_joint": 0.90,
+            ".*_shoulder_roll_joint": 0.90,
+            ".*_shoulder_yaw_joint": 0.90,
+            ".*_elbow_joint": 0.90,
+            ".*_wrist_roll_joint": 0.90,
+        },
+        use_default_offset=True,
+        preserve_order=True,
+    )
+
+
+@configclass
+class G1FixedHandWholeBodyObservationsCfg:
+    """108-D observation vector for a 23-D fixed-hand action space."""
+
+    @configclass
+    class PolicyCfg(ObsGroup):
+        base_lin_vel = ObsTerm(func=base_mdp.base_lin_vel, clip=(-10.0, 10.0))
+        base_ang_vel = ObsTerm(func=base_mdp.base_ang_vel, clip=(-10.0, 10.0))
+        projected_gravity = ObsTerm(func=base_mdp.projected_gravity)
+        box_state = ObsTerm(
+            func=mdp.active_box_state_b,
+            params={
+                "collection_name": "throw_boxes",
+                "robot_cfg": SceneEntityCfg("robot"),
+            },
+            clip=(-10.0, 10.0),
+        )
+        hand_box_kinematics = ObsTerm(
+            func=mdp.palm_box_kinematics_b,
+            params={
+                "collection_name": "throw_boxes",
+                "robot_cfg": _fixed_hand_body_cfg(),
+                "hand_center_offset": _FIXED_HAND_CENTER_OFFSET,
+            },
+            clip=(-10.0, 10.0),
+        )
+        hand_contacts = ObsTerm(
+            func=mdp.hand_contact_forces,
+            params={
+                "left_sensor_cfg": _fixed_left_hand_sensor_cfg(),
+                "right_sensor_cfg": _fixed_right_hand_sensor_cfg(),
+                "force_scale": 25.0,
+            },
+        )
+        joint_pos = ObsTerm(
+            func=base_mdp.joint_pos_rel,
+            params={"asset_cfg": _fixed_hand_whole_body_joint_cfg()},
+            clip=(-3.0, 3.0),
+        )
+        joint_vel = ObsTerm(
+            func=base_mdp.joint_vel_rel,
+            params={"asset_cfg": _fixed_hand_whole_body_joint_cfg()},
+            scale=0.1,
+            clip=(-10.0, 10.0),
+        )
+        actions = ObsTerm(func=base_mdp.last_action)
+        height_scan: ObsTerm | None = None
+
+        def __post_init__(self) -> None:
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    policy: PolicyCfg = PolicyCfg()
+
+
+@configclass
+class G1FixedHandCatchRewardsCfg(G1WholeBodyCatchRewardsCfg):
+    """Contact-progress rewards plus stronger stance regularization."""
+
+    termination_penalty = RewTerm(
+        func=base_mdp.is_terminated_term,
+        weight=-200.0,
+        params={
+            "term_keys": [
+                "box_dropped",
+                "box_out_of_reach",
+                "bad_orientation",
+                "root_too_low",
+            ]
+        },
+    )
+    hand_proximity = RewTerm(
+        func=mdp.hand_target_proximity,
+        weight=10.0,
+        params={
+            "std": 0.22,
+            "collection_name": "throw_boxes",
+            "robot_cfg": _fixed_hand_body_cfg(),
+            "clearance": 0.018,
+            "hand_center_offset": _FIXED_HAND_CENTER_OFFSET,
+        },
+    )
+    centered_between_palms = RewTerm(
+        func=mdp.box_centered_between_palms,
+        weight=4.0,
+        params={
+            "std": 0.16,
+            "collection_name": "throw_boxes",
+            "robot_cfg": _fixed_hand_body_cfg(),
+            "hand_center_offset": _FIXED_HAND_CENTER_OFFSET,
+        },
+    )
+    velocity_match = RewTerm(
+        func=mdp.palm_box_velocity_match,
+        weight=4.0,
+        params={
+            "std": 0.8,
+            "collection_name": "throw_boxes",
+            "robot_cfg": _fixed_hand_body_cfg(),
+            "hand_center_offset": _FIXED_HAND_CENTER_OFFSET,
+        },
+    )
+    contact_progress = RewTerm(
+        func=mdp.hand_contact_progress,
+        weight=4.0,
+        params={
+            "force_threshold": 3.0,
+            "collection_name": "throw_boxes",
+            "left_sensor_cfg": _fixed_left_hand_sensor_cfg(),
+            "right_sensor_cfg": _fixed_right_hand_sensor_cfg(),
+        },
+    )
+    bilateral_contact = RewTerm(
+        func=mdp.bilateral_hand_contact,
+        weight=12.0,
+        params={
+            "force_threshold": 3.0,
+            "collection_name": "throw_boxes",
+            "left_sensor_cfg": _fixed_left_hand_sensor_cfg(),
+            "right_sensor_cfg": _fixed_right_hand_sensor_cfg(),
+        },
+    )
+    hold_height = RewTerm(
+        func=mdp.box_held_above_ground,
+        weight=8.0,
+        params={
+            "min_height": 0.50,
+            "target_height": 0.95,
+            "force_threshold": 2.0,
+            "collection_name": "throw_boxes",
+            "left_sensor_cfg": _fixed_left_hand_sensor_cfg(),
+            "right_sensor_cfg": _fixed_right_hand_sensor_cfg(),
+        },
+    )
+    catch_success = RewTerm(
+        func=mdp.catch_success_reward,
+        weight=50.0,
+        params={
+            "collection_name": "throw_boxes",
+            "robot_cfg": _fixed_hand_body_cfg(),
+            "left_sensor_cfg": _fixed_left_hand_sensor_cfg(),
+            "right_sensor_cfg": _fixed_right_hand_sensor_cfg(),
+            "force_threshold": 1.5,
+            "max_hand_distance": 0.18,
+            "max_relative_speed": 0.80,
+            "min_height": 0.52,
+            "hand_center_offset": _FIXED_HAND_CENTER_OFFSET,
+        },
+    )
+    both_feet_contact = RewTerm(
+        func=mdp.bilateral_foot_contact,
+        weight=1.5,
+        params={"sensor_cfg": _fixed_feet_sensor_cfg(), "force_threshold": 20.0},
+    )
+    base_height = RewTerm(
+        func=base_mdp.base_height_l2,
+        weight=-8.0,
+        params={"target_height": 0.74, "asset_cfg": SceneEntityCfg("robot")},
+    )
+    lower_body_posture = RewTerm(
+        func=base_mdp.joint_deviation_l1,
+        weight=-0.30,
+        params={"asset_cfg": _fixed_hand_lower_joint_cfg()},
+    )
+    action_rate = RewTerm(func=base_mdp.action_rate_l2, weight=-0.03)
+    joint_acceleration = RewTerm(
+        func=base_mdp.joint_acc_l2,
+        weight=-1.0e-7,
+        params={"asset_cfg": _fixed_hand_whole_body_joint_cfg()},
+    )
+    joint_torque = RewTerm(
+        func=base_mdp.joint_torques_l2,
+        weight=-2.0e-6,
+        params={"asset_cfg": _fixed_hand_whole_body_joint_cfg()},
+    )
+    joint_limits = RewTerm(
+        func=base_mdp.joint_pos_limits,
+        weight=-0.50,
+        params={"asset_cfg": _fixed_hand_whole_body_joint_cfg()},
+    )
+
+
+@configclass
+class G1FixedHandCatchTerminationsCfg(G1WholeBodyCatchTerminationsCfg):
+    """Catch, miss and balance criteria for the fixed-hand model."""
+
+    box_caught = DoneTerm(
+        func=mdp.SustainedCatch,
+        params={
+            "collection_name": "throw_boxes",
+            "robot_cfg": _fixed_hand_body_cfg(),
+            "left_sensor_cfg": _fixed_left_hand_sensor_cfg(),
+            "right_sensor_cfg": _fixed_right_hand_sensor_cfg(),
+            "hold_time_s": 0.25,
+            "force_threshold": 1.5,
+            "max_hand_distance": 0.18,
+            "max_relative_speed": 0.80,
+            "min_height": 0.52,
+            "hand_center_offset": _FIXED_HAND_CENTER_OFFSET,
+            "max_robot_tilt": 0.50,
+            "min_root_height": 0.58,
+        },
+    )
+    bad_orientation = DoneTerm(
+        func=base_mdp.bad_orientation,
+        params={"limit_angle": 0.65, "asset_cfg": SceneEntityCfg("robot")},
+    )
+    root_too_low = DoneTerm(
+        func=base_mdp.root_height_below_minimum,
+        params={"minimum_height": 0.54, "asset_cfg": SceneEntityCfg("robot")},
+    )
+
+
+@configclass
+class G1FixedHandWholeBodyCatchBoxEnvCfg(G1WholeBodyCatchBoxEnvCfg):
+    """Stable whole-body catch training using the real 23-DoF fixed-hand G1."""
+
+    observations: G1FixedHandWholeBodyObservationsCfg = G1FixedHandWholeBodyObservationsCfg()
+    actions: G1FixedHandWholeBodyActionsCfg = G1FixedHandWholeBodyActionsCfg()
+    rewards: G1FixedHandCatchRewardsCfg = G1FixedHandCatchRewardsCfg()
+    terminations: G1FixedHandCatchTerminationsCfg = G1FixedHandCatchTerminationsCfg()
+    events: G1FixedHandCatchEventsCfg = G1FixedHandCatchEventsCfg()
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+
+        self.scene.robot = G1_23DOF_FIXED_HAND_CFG.replace(
+            prim_path="{ENV_REGEX_NS}/Robot"
+        )
+        self.scene.num_envs = 256
+        self.episode_length_s = 6.0
+        self.events.reset_robot_joints.params["position_range"] = (0.995, 1.005)
+
+        # Avoid duplicating the task-specific torque, acceleration and limit
+        # terms inherited from the locomotion base configuration.
+        self.rewards.dof_torques_l2 = None
+        self.rewards.dof_acc_l2 = None
+        self.rewards.dof_pos_limits = None
+        self.rewards.joint_deviation_hip = None
+        self.rewards.track_lin_vel_xy_exp.weight = 2.5
+        self.rewards.track_ang_vel_z_exp.weight = 1.0
+        self.rewards.lin_vel_z_l2.weight = -1.0
+        self.rewards.ang_vel_xy_l2.weight = -0.50
+        self.rewards.flat_orientation_l2.weight = -6.0
+        self.rewards.feet_slide.weight = -0.50
+
+        stable_catch = {"max_robot_tilt": 0.50, "min_root_height": 0.58}
+        self.rewards.catch_success.params.update(stable_catch)
+        self.terminations.box_caught.params.update(stable_catch)
+
+
+@configclass
+class G1FixedHandWholeBodyCatchBoxPlayEnvCfg(G1FixedHandWholeBodyCatchBoxEnvCfg):
+    """Single-scene evaluation for a fixed-hand catch checkpoint."""
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.scene.num_envs = 1
+        self.episode_length_s = 8.0
+        self.events.reset_robot_joints.params["position_range"] = (1.0, 1.0)
+        self.observations.policy.enable_corruption = False
+        self.terminations.box_caught.params["hold_time_s"] = 0.8

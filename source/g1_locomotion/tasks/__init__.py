@@ -91,3 +91,13 @@ _register(
     f"{_ENV_MODULE}:G1WholeBodyCatchBoxPlayEnvCfg",
     f"{_AGENT_MODULE}:G1WholeBodyCatchBoxPPORunnerCfg",
 )
+_register(
+    "Unitree-G1-FixedHand-WholeBody-Catch-Box-v0",
+    f"{_ENV_MODULE}:G1FixedHandWholeBodyCatchBoxEnvCfg",
+    f"{_AGENT_MODULE}:G1FixedHandWholeBodyCatchBoxPPORunnerCfg",
+)
+_register(
+    "Unitree-G1-FixedHand-WholeBody-Catch-Box-Play-v0",
+    f"{_ENV_MODULE}:G1FixedHandWholeBodyCatchBoxPlayEnvCfg",
+    f"{_AGENT_MODULE}:G1FixedHandWholeBodyCatchBoxPPORunnerCfg",
+)

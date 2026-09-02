@@ -1,6 +1,6 @@
 # 使用 Isaac Sim 训练 Unitree G1
 
-这是一个基于 **Isaac Lab 2.3.x + Isaac Sim 5.1 + RSL-RL PPO** 的 G1 人形机器人训练项目。行走和抗冲击任务使用 Isaac Lab 官方维护的 `G1_MINIMAL_CFG`；双手接箱任务改用带完整手部碰撞体的 `G1_CFG`。所有任务都在本仓库注册，不需要修改 Isaac Lab 源码。
+这是一个基于 **Isaac Lab 2.3.x + Isaac Sim 5.1 + RSL-RL PPO** 的 G1 人形机器人训练项目。行走和抗冲击任务使用 Isaac Lab 官方维护的 `G1_MINIMAL_CFG`；仓库同时提供 Unitree 官方 23-DoF 黑色固定橡胶手资产，用于训练动作空间和部署模型一致的全身接箱策略。所有任务都在本仓库注册，不需要修改 Isaac Lab 源码。
 
 项目提供基础 locomotion 任务和带箱体冲击的抗扰动任务：
 
@@ -18,6 +18,8 @@
 | `Unitree-G1-Catch-Box-Play-v0` | 双手接箱可视化评估 |
 | `Unitree-G1-WholeBody-Catch-Box-v0` | 全身站立平衡与双手接箱联合训练 |
 | `Unitree-G1-WholeBody-Catch-Box-Play-v0` | 全身接箱 Demo 可视化 |
+| `Unitree-G1-FixedHand-WholeBody-Catch-Box-v0` | 23-DoF 黑色固定手全身接箱训练（推荐） |
+| `Unitree-G1-FixedHand-WholeBody-Catch-Box-Play-v0` | 固定手全身接箱可视化 |
 
 ## 1. 环境要求
 
@@ -304,7 +306,64 @@ tensorboard --logdir logs/rsl_rl/unitree_g1_catch_box --port 6006
 
 日志位于 `logs/rsl_rl/unitree_g1_whole_body_catch_box/`。重点观察 `Episode_Termination/box_caught`、`Episode_Termination/bad_orientation`、`Episode_Termination/root_too_low`、`Episode_Reward/flat_orientation_l2` 和 `Episode_Reward/catch_success`。这是单策略、端到端的站立接箱 Demo；它允许冲击后的恢复步，但速度命令固定为零，因此尚不是边走边接。
 
-## 10. Isaac Sim 到 MuJoCo 的 sim2sim
+## 10. 23-DoF 黑色固定手训练（推荐）
+
+`Unitree-G1-FixedHand-WholeBody-Catch-Box-v0` 使用 Unitree 官方 23-DoF G1：12 个腿部关节、1 个腰部关节和 10 个手臂/腕部关节。两只黑色橡胶假手是刚体，没有手指自由度，因此策略是 23 维动作和 108 维观测，不再浪费 14 个动作控制不可部署的手指。
+
+这一任务同时针对两个已知问题做了调整：脚底从四个 5 mm 点接触改为完整鞋底碰撞盒；前 20000 个控制步不抛箱，让策略先学习站立与恢复步，之后再从慢速、正向、0.5 kg 小箱开始，逐步扩大方位、速度、旋转，并在接箱课程 25% 和 65% 时加入中箱和 3 kg 大箱。奖励会依次给手部靠近、单手接触、双手夹持和稳定保持提供梯度，并要求双脚支撑、低足底滑移、正常基座高度和小倾角。成功终止不再受到通用失败惩罚。
+
+先跑两次 PPO 迭代验证整个训练链路：
+
+```bash
+"$ISAACLAB_PATH/isaaclab.sh" -p scripts/train.py \
+  --task Unitree-G1-FixedHand-WholeBody-Catch-Box-v0 \
+  --num_envs 16 \
+  --max_iterations 2 \
+  --headless
+```
+
+16 GB 显存建议从 256 个环境正式训练：
+
+```bash
+"$ISAACLAB_PATH/isaaclab.sh" -p scripts/train.py \
+  --task Unitree-G1-FixedHand-WholeBody-Catch-Box-v0 \
+  --num_envs 256 \
+  --max_iterations 5000 \
+  --seed 42 \
+  --headless
+```
+
+如果已有旧的 37 维全身 checkpoint，推荐先迁移其中的下肢平衡和上肢权重，再从新的日志目录热启动。迁移会删除手指输入/输出，把躯干、肘和腕关节映射到 23-DoF 命名，并清空形状不兼容的 Adam 动量：
+
+```bash
+mkdir -p logs/rsl_rl/unitree_g1_fixed_hand_whole_body_catch_box/warm_start
+
+"$ISAACLAB_PATH/isaaclab.sh" -p scripts/migrate_fixed_hand_checkpoint.py \
+  /absolute/path/to/legacy/model_2999.pt \
+  logs/rsl_rl/unitree_g1_fixed_hand_whole_body_catch_box/warm_start/model_0.pt
+
+"$ISAACLAB_PATH/isaaclab.sh" -p scripts/train.py \
+  --task Unitree-G1-FixedHand-WholeBody-Catch-Box-v0 \
+  --num_envs 256 \
+  --max_iterations 5000 \
+  --resume --load_run warm_start --checkpoint model_0.pt \
+  --headless
+```
+
+日志目录是 `logs/rsl_rl/unitree_g1_fixed_hand_whole_body_catch_box/`。除成功率外，建议同时观察 `Episode_Reward/contact_progress`、`Episode_Reward/bilateral_contact`、`Episode_Reward/both_feet_contact`、`Episode_Reward/feet_slide` 和两个平衡终止项，避免得到“碰到箱子但同时摔倒”的策略。
+
+可视化指定 checkpoint：
+
+```bash
+"$ISAACLAB_PATH/isaaclab.sh" -p scripts/play.py \
+  --task Unitree-G1-FixedHand-WholeBody-Catch-Box-Play-v0 \
+  --num_envs 1 \
+  --checkpoint "$(pwd)/logs/rsl_rl/unitree_g1_fixed_hand_whole_body_catch_box/<run>/model_4999.pt"
+```
+
+旧的 37 维 `model_2999.pt` 与新任务不兼容，不能未经转换直接续训或播放；应从头训练，或使用上面的迁移脚本热启动。固定手资产及鞋底改动记录在 `assets/isaaclab/unitree_g1_23dof/SOURCE.md`。
+
+## 11. Isaac Sim 到 MuJoCo 的 sim2sim
 
 仓库内置了全身接箱策略的 MuJoCo runner。它不启动 Isaac Sim，而是在 MuJoCo 中复现训练时的 150 维观测、37 维动作、关节顺序、PD 增益、三种随机投掷箱体和 episode 终止条件。物理步长为 0.005 秒，策略每 4 个物理步执行一次，即 50 Hz。
 

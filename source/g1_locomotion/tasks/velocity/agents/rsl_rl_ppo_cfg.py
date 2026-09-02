@@ -81,5 +81,28 @@ class G1WholeBodyCatchBoxPPORunnerCfg(G1CatchBoxPPORunnerCfg):
         self.experiment_name = "unitree_g1_whole_body_catch_box"
         self.num_steps_per_env = 64
         self.max_iterations = 5000
+        self.clip_actions = 1.0
         self.policy.init_noise_std = 0.55
         self.algorithm.entropy_coef = 0.004
+
+
+@configclass
+class G1FixedHandWholeBodyCatchBoxPPORunnerCfg(G1WholeBodyCatchBoxPPORunnerCfg):
+    """PPO tuned for stable 23-DoF fixed-hand interception and clamping."""
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.experiment_name = "unitree_g1_fixed_hand_whole_body_catch_box"
+        self.run_name = "ppo"
+        self.num_steps_per_env = 64
+        self.max_iterations = 5000
+        self.save_interval = 50
+        self.clip_actions = 1.0
+        self.policy.init_noise_std = 0.35
+        self.policy.actor_obs_normalization = True
+        self.policy.critic_obs_normalization = True
+        self.policy.actor_hidden_dims = [512, 256, 128]
+        self.policy.critic_hidden_dims = [512, 256, 128]
+        self.algorithm.entropy_coef = 0.002
+        self.algorithm.learning_rate = 5.0e-4
+        self.algorithm.desired_kl = 0.01

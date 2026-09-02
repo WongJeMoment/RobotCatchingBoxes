@@ -16,6 +16,7 @@ from g1_locomotion.sim2sim.whole_body_catch import (
     DEFAULT_LOG_ROOT,
     DEFAULT_MODEL_PATH,
     EFFORT_LIMIT,
+    FIXED_HAND_ACTION_INDICES,
     OBSERVATION_DIM,
     OBSERVATION_SLICES,
     POLICY_JOINT_NAMES,
@@ -85,8 +86,24 @@ class Sim2SimContractTest(unittest.TestCase):
         actuator_limits = sim.model.actuator_ctrlrange[sim.bindings.actuator_ids, 1]
         np.testing.assert_allclose(actuator_limits, EFFORT_LIMIT)
         hand_links = set(sim.bindings.hand_geom_keys.values())
-        self.assertIn(("left", "left_palm_link"), hand_links)
-        self.assertIn(("right", "right_palm_link"), hand_links)
+        self.assertIn(("left", "left_fixed_hand"), hand_links)
+        self.assertIn(("right", "right_fixed_hand"), hand_links)
+        for side in ("left", "right"):
+            geom_id = mujoco.mj_name2id(
+                sim.model, mujoco.mjtObj.mjOBJ_GEOM, f"{side}_fixed_hand_collision"
+            )
+            self.assertGreaterEqual(geom_id, 0)
+            self.assertNotEqual(sim.model.geom_contype[geom_id], 0)
+        finger_geom_ids = [
+            geom_id
+            for geom_id, (_, link_name) in sim.bindings.hand_geom_keys.items()
+            if link_name.endswith("_link")
+        ]
+        self.assertGreater(len(finger_geom_ids), 0)
+        for geom_id in finger_geom_ids:
+            self.assertEqual(sim.model.geom_contype[geom_id], 0)
+            self.assertEqual(sim.model.geom_conaffinity[geom_id], 0)
+            self.assertEqual(sim.model.geom_rgba[geom_id, 3], 0.0)
         expected_foot_size = np.asarray((0.1015546091, 0.0327346220, 0.0092539397))
         expected_foot_pos = np.asarray((0.0359170487, 0.0, -0.0251700647))
         for side in ("left", "right"):
@@ -103,6 +120,16 @@ class Sim2SimContractTest(unittest.TestCase):
             if sim.model.geom_contype[box.geom_id] != 0
         ]
         self.assertEqual(active_boxes, [sim.active_box_index])
+
+    def test_fixed_hand_ignores_legacy_finger_actions(self) -> None:
+        sim = WholeBodyCatchSim(DEFAULT_MODEL_PATH, seed=7)
+        action = np.zeros(ACTION_DIM, dtype=np.float64)
+        action[FIXED_HAND_ACTION_INDICES] = 1.0
+        sim.step(action)
+        np.testing.assert_allclose(
+            sim.position_target[FIXED_HAND_ACTION_INDICES],
+            DEFAULT_JOINT_POS[FIXED_HAND_ACTION_INDICES],
+        )
 
     def test_joint_velocity_is_clipped_before_scaling(self) -> None:
         sim = WholeBodyCatchSim(DEFAULT_MODEL_PATH, seed=7)

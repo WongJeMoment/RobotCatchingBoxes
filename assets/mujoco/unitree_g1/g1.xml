@@ -73,6 +73,8 @@
     <mesh file="right_zero_link.STL"/>
     <mesh file="right_one_link.STL"/>
     <mesh file="right_two_link.STL"/>
+    <mesh file="left_wrist_roll_rubber_hand.STL"/>
+    <mesh file="right_wrist_roll_rubber_hand.STL"/>
     <mesh file="right_three_link.STL"/>
     <mesh file="right_four_link.STL"/>
     <mesh file="right_five_link.STL"/>
@@ -214,11 +216,11 @@
                   <inertial pos="0.133814 0.00147121 0.000265832" quat="0.496781 0.497877 0.498782 0.506502"
                     mass="0.50826" diaginertia="0.00239763 0.00226639 0.000285577"/>
                   <joint name="left_elbow_roll_joint" axis="1 0 0" range="-2.0943 2.0943"/>
-                  <geom type="mesh" class="visual" mesh="left_elbow_roll_link"/>
-                  <geom type="mesh" mesh="left_elbow_roll_link" class="collision"/>
-                  <geom pos="0.12 0 0" type="mesh" class="visual" mesh="left_palm_link"/>
-                  <geom name="left_palm_collision" pos="0.12 0 0" type="mesh" mesh="left_palm_link" class="collision"/>
-                  <!-- The USD asset exposes the fixed palm link at this frame. -->
+                  <!-- Official 23-DoF G1 fixed rubber-hand mesh.  Finger bodies
+                       remain only as hidden compatibility DoFs for old policies. -->
+                  <geom type="mesh" class="visual" material="black" mesh="left_wrist_roll_rubber_hand"/>
+                  <geom name="left_fixed_hand_collision" type="mesh"
+                    mesh="left_wrist_roll_rubber_hand" class="collision"/>
                   <site name="left_palm" pos="0.12 0 0"/>
                   <body name="left_zero_link" pos="0.17 0 0">
                     <inertial pos="-0.0260466 -0.00877511 1.08605e-05" quat="0.59241 0.381376 -0.592953 0.389884"
@@ -302,11 +304,10 @@
                   <inertial pos="0.133814 -0.00147121 0.000265832" quat="0.506502 0.498782 0.497877 0.496781"
                     mass="0.50826" diaginertia="0.00239763 0.00226639 0.000285577"/>
                   <joint name="right_elbow_roll_joint" axis="1 0 0" range="-2.0943 2.0943"/>
-                  <geom type="mesh" class="visual" mesh="right_elbow_roll_link"/>
-                  <geom type="mesh" mesh="right_elbow_roll_link" class="collision"/>
-                  <geom pos="0.12 0 0" type="mesh" class="visual" mesh="right_palm_link"/>
-                  <geom name="right_palm_collision" pos="0.12 0 0" type="mesh" mesh="right_palm_link" class="collision"/>
-                  <!-- The USD asset exposes the fixed palm link at this frame. -->
+                  <!-- Official 23-DoF G1 fixed rubber-hand mesh. -->
+                  <geom type="mesh" class="visual" material="black" mesh="right_wrist_roll_rubber_hand"/>
+                  <geom name="right_fixed_hand_collision" type="mesh"
+                    mesh="right_wrist_roll_rubber_hand" class="collision"/>
                   <site name="right_palm" pos="0.12 0 0"/>
                   <body name="right_zero_link" pos="0.17 0 0">
                     <inertial pos="-0.0260466 0.00877511 1.08605e-05" quat="0.381376 0.59241 -0.389884 0.592953"

@@ -194,6 +194,7 @@ def _pd_parameters() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 DEFAULT_JOINT_POS = _joint_defaults()
 ACTION_SCALE = _action_scales()
 PD_STIFFNESS, PD_DAMPING, EFFORT_LIMIT = _pd_parameters()
+FIXED_HAND_ACTION_INDICES = np.arange(23, ACTION_DIM, dtype=np.int32)
 
 
 class TorchPolicy:
@@ -373,9 +374,9 @@ class ModelBindings:
         finger_link = re.compile(r"^(left|right)_(zero|one|two|three|four|five|six)_link$")
         for geom_id in range(self.model.ngeom):
             geom_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
-            if geom_name in ("left_palm_collision", "right_palm_collision"):
+            if geom_name in ("left_fixed_hand_collision", "right_fixed_hand_collision"):
                 side = geom_name.split("_", 1)[0]
-                mapping[geom_id] = (side, f"{side}_palm_link")
+                mapping[geom_id] = (side, f"{side}_fixed_hand")
                 continue
             if int(self.model.geom_group[geom_id]) != 3:
                 continue
@@ -476,11 +477,25 @@ class WholeBodyCatchSim:
         self.episode_time = 0.0
         self.sustained_catch_steps = 0
         self.last_launch: dict[str, Any] = {}
+        self._hide_compatibility_fingers()
         self.reset()
 
     @property
     def policy_dt(self) -> float:
         return POLICY_DT
+
+    def _hide_compatibility_fingers(self) -> None:
+        """Hide/disable articulated fingers retained only for checkpoint dimensions."""
+
+        finger_link = re.compile(r"^(left|right)_(zero|one|two|three|four|five|six)_link$")
+        for geom_id in range(self.model.ngeom):
+            body_id = int(self.model.geom_bodyid[geom_id])
+            body_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body_id)
+            if finger_link.fullmatch(body_name or "") is None:
+                continue
+            self.model.geom_rgba[geom_id, 3] = 0.0
+            self.model.geom_contype[geom_id] = 0
+            self.model.geom_conaffinity[geom_id] = 0
 
     def reset(self) -> dict[str, Any]:
         mujoco.mj_resetData(self.model, self.data)
@@ -770,6 +785,9 @@ class WholeBodyCatchSim:
             raise FloatingPointError("action 出现 NaN/Inf")
         self.last_action[:] = action
         self.position_target[:] = DEFAULT_JOINT_POS + ACTION_SCALE * action
+        self.position_target[FIXED_HAND_ACTION_INDICES] = DEFAULT_JOINT_POS[
+            FIXED_HAND_ACTION_INDICES
+        ]
 
         for _ in range(POLICY_DECIMATION):
             self._apply_pd_control()
@@ -816,6 +834,7 @@ def _print_contract(
         print("[INFO] policy: zero-action controller")
     clip_description = "disabled" if action_clip <= 0.0 else f"[-{action_clip:g}, {action_clip:g}]"
     print(f"[INFO] policy action clip: {clip_description}")
+    print("[INFO] hand model: fixed black rubber hands (legacy finger actions ignored)")
     print(
         f"[INFO] observation={OBSERVATION_DIM}, action={ACTION_DIM}, "
         f"physics={1.0 / PHYSICS_DT:.0f} Hz, policy={1.0 / POLICY_DT:.0f} Hz"

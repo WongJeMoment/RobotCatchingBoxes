@@ -21,11 +21,19 @@ from g1_locomotion.sim2sim.whole_body_catch import (
     POLICY_JOINT_NAMES,
     TorchPolicy,
     WholeBodyCatchSim,
+    clip_policy_action,
     find_latest_checkpoint,
 )
 
 
 class Sim2SimContractTest(unittest.TestCase):
+    def test_policy_action_safety_clip(self) -> None:
+        action = np.linspace(-3.0, 3.0, ACTION_DIM)
+        clipped = clip_policy_action(action, 1.0)
+        self.assertLessEqual(float(np.max(np.abs(clipped))), 1.0)
+        np.testing.assert_allclose(clip_policy_action(action, 0.0), action)
+        self.assertFalse(np.shares_memory(clip_policy_action(action, 0.0), action))
+
     def test_observation_layout_and_joint_order(self) -> None:
         self.assertEqual(len(POLICY_JOINT_NAMES), ACTION_DIM)
         self.assertEqual(len(set(POLICY_JOINT_NAMES)), ACTION_DIM)
@@ -79,6 +87,16 @@ class Sim2SimContractTest(unittest.TestCase):
         hand_links = set(sim.bindings.hand_geom_keys.values())
         self.assertIn(("left", "left_palm_link"), hand_links)
         self.assertIn(("right", "right_palm_link"), hand_links)
+        expected_foot_size = np.asarray((0.1015546091, 0.0327346220, 0.0092539397))
+        expected_foot_pos = np.asarray((0.0359170487, 0.0, -0.0251700647))
+        for side in ("left", "right"):
+            foot_id = mujoco.mj_name2id(
+                sim.model, mujoco.mjtObj.mjOBJ_GEOM, f"{side}_foot_collision"
+            )
+            self.assertGreaterEqual(foot_id, 0)
+            self.assertEqual(sim.model.geom_type[foot_id], mujoco.mjtGeom.mjGEOM_BOX)
+            np.testing.assert_allclose(sim.model.geom_size[foot_id], expected_foot_size)
+            np.testing.assert_allclose(sim.model.geom_pos[foot_id], expected_foot_pos)
         active_boxes = [
             index
             for index, box in enumerate(sim.bindings.boxes)

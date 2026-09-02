@@ -797,13 +797,25 @@ def _format_vector(vector: np.ndarray) -> str:
     return "[" + ", ".join(f"{value:.2f}" for value in vector) + "]"
 
 
-def _print_contract(sim: WholeBodyCatchSim, policy: TorchPolicy | None) -> None:
+def clip_policy_action(action: np.ndarray, limit: float) -> np.ndarray:
+    """Apply the deployment safety bound, or copy the raw action when disabled."""
+
+    if limit <= 0.0:
+        return action.copy()
+    return np.clip(action, -limit, limit)
+
+
+def _print_contract(
+    sim: WholeBodyCatchSim, policy: TorchPolicy | None, action_clip: float
+) -> None:
     print("[INFO] sim2sim contract validated")
     print(f"[INFO] model: {sim.model_path}")
     if policy is not None:
         print(f"[INFO] policy: {policy.path} ({policy.kind}, device={policy.device})")
     else:
         print("[INFO] policy: zero-action controller")
+    clip_description = "disabled" if action_clip <= 0.0 else f"[-{action_clip:g}, {action_clip:g}]"
+    print(f"[INFO] policy action clip: {clip_description}")
     print(
         f"[INFO] observation={OBSERVATION_DIM}, action={ACTION_DIM}, "
         f"physics={1.0 / PHYSICS_DT:.0f} Hz, policy={1.0 / POLICY_DT:.0f} Hz"
@@ -848,6 +860,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="按真实时间节流；viewer 默认开启，headless 默认关闭",
     )
     parser.add_argument("--zero-action", action="store_true", help="不用策略，只验证模型和 PD 站立")
+    parser.add_argument(
+        "--action-clip",
+        type=float,
+        default=1.0,
+        help="策略动作安全限幅；默认 1.0，设为 0 可复现训练时的无限幅动作",
+    )
     parser.add_argument("--dry-run", action="store_true", help="只加载并检查策略/模型契约")
     return parser
 
@@ -855,6 +873,8 @@ def build_parser() -> argparse.ArgumentParser:
 def run(args: argparse.Namespace) -> int:
     if args.duration < 0.0:
         raise ValueError("--duration 不能为负数")
+    if not math.isfinite(args.action_clip) or args.action_clip < 0.0:
+        raise ValueError("--action-clip 必须是有限的非负数")
     if args.max_episodes < 0 or args.max_policy_steps < 0:
         raise ValueError("--max-episodes/--max-policy-steps 不能为负数")
     if args.episode_length <= 0.0 or args.hold_time <= 0.0:
@@ -873,10 +893,11 @@ def run(args: argparse.Namespace) -> int:
         episode_length_s=args.episode_length,
         hold_time_s=args.hold_time,
     )
-    _print_contract(sim, policy)
+    _print_contract(sim, policy, args.action_clip)
     if args.dry_run:
         observation = sim.observation()
-        action = np.zeros(ACTION_DIM) if policy is None else policy(observation)
+        raw_action = np.zeros(ACTION_DIM) if policy is None else policy(observation)
+        action = clip_policy_action(raw_action, args.action_clip)
         print(
             f"[INFO] dry-run OK: obs_norm={np.linalg.norm(observation):.3f}, "
             f"action_norm={np.linalg.norm(action):.3f}"
@@ -935,7 +956,10 @@ def run(args: argparse.Namespace) -> int:
 
             loop_start = time.perf_counter()
             observation = sim.observation()
-            action = np.zeros(ACTION_DIM, dtype=np.float64) if policy is None else policy(observation)
+            raw_action = (
+                np.zeros(ACTION_DIM, dtype=np.float64) if policy is None else policy(observation)
+            )
+            action = clip_policy_action(raw_action, args.action_clip)
             reason = sim.step(action)
             total_steps += 1
             total_sim_time += POLICY_DT

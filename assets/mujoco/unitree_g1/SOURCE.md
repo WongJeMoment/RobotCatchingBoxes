@@ -12,6 +12,7 @@ joints per side.  The newer 29-DOF G1 body model is not policy-compatible.
 Local changes are limited to:
 
 - collision masks that disable robot self-collisions, as in the IsaacLab task;
+- cuboid foot colliders matching the G1 USD dimensions and local transforms;
 - palm sites placed at the fixed `left_palm_link` and `right_palm_link` frames;
 - a 5 ms simulation timestep, ground plane, and the three task projectiles.
 

@@ -325,6 +325,8 @@ python scripts/sim2sim_mujoco.py \
 
 runner 可以直接加载 RSL-RL 的 `model_*.pt`，也可以加载 `play.py` 导出的 `exported/policy.pt`。不传 `--checkpoint` 时，会自动选择 `logs/rsl_rl/unitree_g1_whole_body_catch_box/` 下时间最新一次运行的最大迭代 checkpoint。viewer 中按 `R` 可重新投掷并复位。
 
+为避免未限幅的 PPO 输出把脚踝直接推到机械限位，runner 默认将策略动作限制在 `[-1, 1]`，并使用与 Isaac G1 USD 相同尺寸和局部位姿的鞋底碰撞盒。若要严格复现本次训练中 `clip_actions: null` 的原始动作语义，可添加 `--action-clip 0`；该 checkpoint 的首帧腿部动作幅值可超过 5，关闭限幅时 MuJoCo 中的脚踝可能迅速失稳。
+
 无窗口服务器先执行契约检查和短时冒烟测试：
 
 ```bash

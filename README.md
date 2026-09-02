@@ -304,6 +304,55 @@ tensorboard --logdir logs/rsl_rl/unitree_g1_catch_box --port 6006
 
 日志位于 `logs/rsl_rl/unitree_g1_whole_body_catch_box/`。重点观察 `Episode_Termination/box_caught`、`Episode_Termination/bad_orientation`、`Episode_Termination/root_too_low`、`Episode_Reward/flat_orientation_l2` 和 `Episode_Reward/catch_success`。这是单策略、端到端的站立接箱 Demo；它允许冲击后的恢复步，但速度命令固定为零，因此尚不是边走边接。
 
+## 10. Isaac Sim 到 MuJoCo 的 sim2sim
+
+仓库内置了全身接箱策略的 MuJoCo runner。它不启动 Isaac Sim，而是在 MuJoCo 中复现训练时的 150 维观测、37 维动作、关节顺序、PD 增益、三种随机投掷箱体和 episode 终止条件。物理步长为 0.005 秒，策略每 4 个物理步执行一次，即 50 Hz。
+
+建议单独使用轻量的 MuJoCo 环境，避免改动已经配置好的 Isaac Lab 环境：
+
+```bash
+conda create -n g1_sim2sim python=3.11 -y
+conda activate g1_sim2sim
+python -m pip install -e ".[sim2sim]"
+```
+
+使用本项目中的 `model_2999.pt` 打开 MuJoCo viewer：
+
+```bash
+python scripts/sim2sim_mujoco.py \
+  --checkpoint "$(pwd)/logs/rsl_rl/unitree_g1_whole_body_catch_box/2026-08-30_21-01-43_ppo/model_2999.pt"
+```
+
+runner 可以直接加载 RSL-RL 的 `model_*.pt`，也可以加载 `play.py` 导出的 `exported/policy.pt`。不传 `--checkpoint` 时，会自动选择 `logs/rsl_rl/unitree_g1_whole_body_catch_box/` 下时间最新一次运行的最大迭代 checkpoint。viewer 中按 `R` 可重新投掷并复位。
+
+无窗口服务器先执行契约检查和短时冒烟测试：
+
+```bash
+python scripts/sim2sim_mujoco.py \
+  --checkpoint /absolute/path/to/model_2999.pt \
+  --dry-run
+
+python scripts/sim2sim_mujoco.py \
+  --checkpoint /absolute/path/to/model_2999.pt \
+  --headless --duration 8
+```
+
+只检查 MuJoCo 模型和 PD 站立、不运行神经网络时使用：
+
+```bash
+python scripts/sim2sim_mujoco.py --zero-action --headless --duration 8
+```
+
+运行自动测试：
+
+```bash
+PYTHONPATH=source python -m unittest -v tests/test_sim2sim_contract.py
+```
+
+MuJoCo G1 模型来自 MuJoCo Menagerie 的 37 关节历史版本；该版本与 Isaac Sim 5.1 的 `G1_CFG` 命名和运动链匹配。资产来源与本地改动记录在 `assets/mujoco/unitree_g1/SOURCE.md`，BSD-3-Clause 许可保留在同目录的 `LICENSE`。
+
+这里的策略仍使用箱体真值状态和仿真接触力，因此这是 physics sim2sim 验证，不是可直接上真机的视觉部署。MuJoCo 和 PhysX 的接触、摩擦和关节模型不同；策略在 Isaac Sim 成功但在 MuJoCo 失败，通常意味着训练随机化或策略鲁棒性还不足，应把 sim2sim 结果作为部署门槛，而不是绕过它直接下发真机。
+
 ## 常见问题
 
 **提示找不到 Isaac Lab**

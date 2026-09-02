@@ -1,0 +1,46 @@
+<mujoco model="g1 scene">
+  <include file="g1.xml"/>
+
+  <!-- IsaacLab runs PhysX at 200 Hz and evaluates the policy every four
+       simulation steps.  The Python runner mirrors that decimation. -->
+  <option timestep="0.005" gravity="0 0 -9.81" integrator="implicitfast" cone="elliptic"/>
+
+  <statistic center="1 -0.8 1.1" extent=".3"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.1 0.1 0.1" specular="0.9 0.9 0.9"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="140" elevation="-20"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"
+      contype="2" conaffinity="3" friction="1 0.005 0.0001"/>
+
+    <!-- The IsaacLab task keeps all three projectile sizes in the scene and
+         activates one at each reset.  Inactive geoms are disabled by the
+         runner while their free bodies are parked below the scene. -->
+    <body name="box_small" pos="0 0 -20">
+      <freejoint name="box_small_joint"/>
+      <geom name="box_small_geom" type="box" size="0.075 0.075 0.075" mass="0.5"
+        rgba="0.15 0.75 1 1" contype="2" conaffinity="3" friction="0.5 0.005 0.0001"/>
+    </body>
+    <body name="box_medium" pos="0 0 -22">
+      <freejoint name="box_medium_joint"/>
+      <geom name="box_medium_geom" type="box" size="0.15 0.125 0.125" mass="1.5"
+        rgba="1 0.65 0.1 1" contype="2" conaffinity="3" friction="0.5 0.005 0.0001"/>
+    </body>
+    <body name="box_large" pos="0 0 -24">
+      <freejoint name="box_large_joint"/>
+      <geom name="box_large_geom" type="box" size="0.225 0.175 0.175" mass="3.0"
+        rgba="0.95 0.2 0.15 1" contype="2" conaffinity="3" friction="0.5 0.005 0.0001"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -1,8 +1,9 @@
-"""Run the whole-body box-catching policy in MuJoCo.
+"""Run either whole-body box-catching policy in MuJoCo.
 
-This module mirrors the policy-facing contract of
-``Unitree-G1-WholeBody-Catch-Box-v0``.  It intentionally does not import Isaac
-Sim or IsaacLab, so deployment can run in a small CPU-only Python environment.
+This module mirrors the policy-facing contracts of both the legacy 37-DoF task
+and ``Unitree-G1-FixedHand-WholeBody-Catch-Box-v0``.  It intentionally does not
+import Isaac Sim or IsaacLab, so deployment can run in a small CPU-only Python
+environment.
 """
 
 from __future__ import annotations
@@ -37,6 +38,8 @@ POLICY_DECIMATION = 4
 POLICY_DT = PHYSICS_DT * POLICY_DECIMATION
 OBSERVATION_DIM = 150
 ACTION_DIM = 37
+FIXED_HAND_OBSERVATION_DIM = 108
+FIXED_HAND_ACTION_DIM = 23
 NORMALIZER_EPS = 1.0e-2
 
 # IsaacLab resolves each regex in the configuration in order and preserves the
@@ -85,6 +88,26 @@ POLICY_JOINT_NAMES: tuple[str, ...] = (
     "right_two_joint",
 )
 
+# Exact IsaacLab order for the true 23-DoF fixed-hand policy.  The first 23
+# physical joints in the compatibility MJCF have the same axes and order, but
+# five historical MJCF names differ; ModelBindings keeps that name translation
+# local to the simulator.
+FIXED_HAND_POLICY_JOINT_NAMES: tuple[str, ...] = (
+    *POLICY_JOINT_NAMES[:12],
+    "waist_yaw_joint",
+    "left_shoulder_pitch_joint",
+    "right_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "right_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "right_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "right_elbow_joint",
+    "left_wrist_roll_joint",
+    "right_wrist_roll_joint",
+)
+FIXED_HAND_MJCF_JOINT_NAMES: tuple[str, ...] = POLICY_JOINT_NAMES[:FIXED_HAND_ACTION_DIM]
+
 OBSERVATION_TERMS: tuple[tuple[str, int], ...] = (
     ("base_lin_vel", 3),
     ("base_ang_vel", 3),
@@ -97,19 +120,36 @@ OBSERVATION_TERMS: tuple[tuple[str, int], ...] = (
     ("actions", ACTION_DIM),
 )
 
+FIXED_HAND_OBSERVATION_TERMS: tuple[tuple[str, int], ...] = (
+    ("base_lin_vel", 3),
+    ("base_ang_vel", 3),
+    ("projected_gravity", 3),
+    ("box_state", 16),
+    ("hand_box_kinematics", 12),
+    ("hand_contacts", 2),
+    ("joint_pos", FIXED_HAND_ACTION_DIM),
+    ("joint_vel", FIXED_HAND_ACTION_DIM),
+    ("actions", FIXED_HAND_ACTION_DIM),
+)
 
-def _build_observation_slices() -> dict[str, slice]:
+
+def _build_observation_slices(
+    terms: tuple[tuple[str, int], ...], observation_dim: int
+) -> dict[str, slice]:
     result: dict[str, slice] = {}
     offset = 0
-    for name, width in OBSERVATION_TERMS:
+    for name, width in terms:
         result[name] = slice(offset, offset + width)
         offset += width
-    if offset != OBSERVATION_DIM:
-        raise RuntimeError(f"内部观测契约错误: {offset} != {OBSERVATION_DIM}")
+    if offset != observation_dim:
+        raise RuntimeError(f"内部观测契约错误: {offset} != {observation_dim}")
     return result
 
 
-OBSERVATION_SLICES = _build_observation_slices()
+OBSERVATION_SLICES = _build_observation_slices(OBSERVATION_TERMS, OBSERVATION_DIM)
+FIXED_HAND_OBSERVATION_SLICES = _build_observation_slices(
+    FIXED_HAND_OBSERVATION_TERMS, FIXED_HAND_OBSERVATION_DIM
+)
 
 
 @dataclass(frozen=True)
@@ -191,10 +231,142 @@ def _pd_parameters() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     )
 
 
+def _fixed_hand_pd_parameters() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the gains and Unitree effort limits used by the 23-DoF task."""
+
+    stiffness: list[float] = []
+    damping: list[float] = []
+    effort: list[float] = []
+    for name in FIXED_HAND_POLICY_JOINT_NAMES:
+        if "hip_pitch" in name or "knee" in name:
+            stiffness.append(200.0)
+            damping.append(5.0)
+            effort.append(139.0 if "knee" in name else 88.0)
+        elif "hip_roll" in name or "hip_yaw" in name:
+            stiffness.append(150.0)
+            damping.append(5.0)
+            effort.append(88.0)
+        elif "ankle" in name:
+            stiffness.append(35.0)
+            damping.append(3.0)
+            effort.append(35.0)
+        elif name == "waist_yaw_joint":
+            stiffness.append(200.0)
+            damping.append(5.0)
+            effort.append(88.0)
+        elif "wrist_roll" in name:
+            stiffness.append(20.0)
+            damping.append(4.0)
+            effort.append(25.0)
+        else:
+            stiffness.append(40.0)
+            damping.append(8.0)
+            effort.append(25.0)
+    return (
+        np.asarray(stiffness, dtype=np.float64),
+        np.asarray(damping, dtype=np.float64),
+        np.asarray(effort, dtype=np.float64),
+    )
+
+
 DEFAULT_JOINT_POS = _joint_defaults()
 ACTION_SCALE = _action_scales()
 PD_STIFFNESS, PD_DAMPING, EFFORT_LIMIT = _pd_parameters()
+FIXED_HAND_DEFAULT_JOINT_POS = DEFAULT_JOINT_POS[:FIXED_HAND_ACTION_DIM].copy()
+FIXED_HAND_ACTION_SCALE = ACTION_SCALE[:FIXED_HAND_ACTION_DIM].copy()
+FIXED_HAND_PD_STIFFNESS, FIXED_HAND_PD_DAMPING, FIXED_HAND_EFFORT_LIMIT = (
+    _fixed_hand_pd_parameters()
+)
 FIXED_HAND_ACTION_INDICES = np.arange(23, ACTION_DIM, dtype=np.int32)
+
+
+@dataclass(frozen=True)
+class PolicyContract:
+    """Policy-facing dimensions and task parameters for one trained task."""
+
+    key: str
+    label: str
+    observation_dim: int
+    action_dim: int
+    joint_names: tuple[str, ...]
+    observation_terms: tuple[tuple[str, int], ...]
+    observation_slices: dict[str, slice]
+    default_joint_pos: np.ndarray
+    action_scale: np.ndarray
+    pd_stiffness: np.ndarray
+    pd_damping: np.ndarray
+    effort_limit: np.ndarray
+    hand_center_offset: float
+    target_clearance: float
+    force_threshold: float
+    max_hand_distance: float
+    max_relative_speed: float
+    min_box_height: float
+    max_robot_tilt: float
+    min_root_height: float
+    termination_tilt: float
+    termination_root_height: float
+    upright_launch: bool
+
+
+LEGACY_POLICY_CONTRACT = PolicyContract(
+    key="legacy",
+    label="legacy WholeBody-Catch-Box 150/37",
+    observation_dim=OBSERVATION_DIM,
+    action_dim=ACTION_DIM,
+    joint_names=POLICY_JOINT_NAMES,
+    observation_terms=OBSERVATION_TERMS,
+    observation_slices=OBSERVATION_SLICES,
+    default_joint_pos=DEFAULT_JOINT_POS,
+    action_scale=ACTION_SCALE,
+    pd_stiffness=PD_STIFFNESS,
+    pd_damping=PD_DAMPING,
+    effort_limit=EFFORT_LIMIT,
+    hand_center_offset=0.12,
+    target_clearance=0.025,
+    force_threshold=2.0,
+    max_hand_distance=0.22,
+    max_relative_speed=0.75,
+    min_box_height=0.55,
+    max_robot_tilt=0.55,
+    min_root_height=0.60,
+    termination_tilt=0.80,
+    termination_root_height=0.52,
+    upright_launch=False,
+)
+FIXED_HAND_POLICY_CONTRACT = PolicyContract(
+    key="fixed-hand",
+    label="FixedHand-WholeBody-Catch-Box 108/23",
+    observation_dim=FIXED_HAND_OBSERVATION_DIM,
+    action_dim=FIXED_HAND_ACTION_DIM,
+    joint_names=FIXED_HAND_POLICY_JOINT_NAMES,
+    observation_terms=FIXED_HAND_OBSERVATION_TERMS,
+    observation_slices=FIXED_HAND_OBSERVATION_SLICES,
+    default_joint_pos=FIXED_HAND_DEFAULT_JOINT_POS,
+    action_scale=FIXED_HAND_ACTION_SCALE,
+    pd_stiffness=FIXED_HAND_PD_STIFFNESS,
+    pd_damping=FIXED_HAND_PD_DAMPING,
+    effort_limit=FIXED_HAND_EFFORT_LIMIT,
+    hand_center_offset=0.108,
+    target_clearance=0.018,
+    force_threshold=1.5,
+    max_hand_distance=0.18,
+    max_relative_speed=0.80,
+    min_box_height=0.52,
+    max_robot_tilt=0.50,
+    min_root_height=0.58,
+    termination_tilt=0.65,
+    termination_root_height=0.54,
+    upright_launch=True,
+)
+POLICY_CONTRACTS_BY_DIMENSIONS = {
+    (contract.observation_dim, contract.action_dim): contract
+    for contract in (LEGACY_POLICY_CONTRACT, FIXED_HAND_POLICY_CONTRACT)
+}
+POLICY_CONTRACTS_BY_KEY = {
+    contract.key: contract
+    for contract in (LEGACY_POLICY_CONTRACT, FIXED_HAND_POLICY_CONTRACT)
+}
 
 
 class TorchPolicy:
@@ -211,6 +383,7 @@ class TorchPolicy:
         self._layers: list[tuple[torch.Tensor, torch.Tensor]] = []
         self._mean: torch.Tensor | None = None
         self._std: torch.Tensor | None = None
+        self.contract: PolicyContract
 
         try:
             self._jit = torch.jit.load(str(self.path), map_location=self.device)
@@ -229,12 +402,19 @@ class TorchPolicy:
             self._configure_raw_actor(state)
 
         input_dim, output_dim = self._infer_dimensions(state)
-        if (input_dim, output_dim) != (OBSERVATION_DIM, ACTION_DIM):
+        dimensions = (input_dim, output_dim)
+        if dimensions not in POLICY_CONTRACTS_BY_DIMENSIONS:
+            supported = ", ".join(
+                f"{contract.observation_dim}/{contract.action_dim}"
+                for contract in POLICY_CONTRACTS_BY_DIMENSIONS.values()
+            )
             raise ValueError(
                 "策略维度与 WholeBody-Catch-Box 不兼容: "
-                f"obs={input_dim}, action={output_dim}; 期望 "
-                f"obs={OBSERVATION_DIM}, action={ACTION_DIM}"
+                f"obs={input_dim}, action={output_dim}; 支持 {supported}"
             )
+        self.contract = POLICY_CONTRACTS_BY_DIMENSIONS[dimensions]
+        self.observation_dim = input_dim
+        self.action_dim = output_dim
 
     @staticmethod
     def _load_checkpoint(path: Path) -> Any:
@@ -282,7 +462,7 @@ class TorchPolicy:
         self._std = state[std_key].detach().to(device=self.device, dtype=torch.float32)
 
     def __call__(self, observation: np.ndarray) -> np.ndarray:
-        if observation.shape != (OBSERVATION_DIM,):
+        if observation.shape != (self.observation_dim,):
             raise ValueError(f"策略输入形状错误: {observation.shape}")
         tensor = torch.as_tensor(observation, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.inference_mode():
@@ -296,7 +476,7 @@ class TorchPolicy:
                     if index + 1 != len(self._layers):
                         output = torch_functional.elu(output)
 
-        if not isinstance(output, torch.Tensor) or tuple(output.shape) != (1, ACTION_DIM):
+        if not isinstance(output, torch.Tensor) or tuple(output.shape) != (1, self.action_dim):
             shape = getattr(output, "shape", None)
             raise RuntimeError(f"策略输出形状错误: {shape}")
         action = output.squeeze(0).detach().cpu().numpy().astype(np.float64, copy=False)
@@ -428,6 +608,23 @@ def _random_quaternion(rng: np.random.Generator) -> np.ndarray:
     return xyzw[[3, 0, 1, 2]]
 
 
+def _euler_xyz_to_quaternion(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    """Convert fixed-axis XYZ angles to a wxyz quaternion."""
+
+    cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
+    cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
+    cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
+    return np.asarray(
+        (
+            cr * cp * cy + sr * sp * sy,
+            sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+        ),
+        dtype=np.float64,
+    )
+
+
 def _quat_to_matrix(quaternion: np.ndarray) -> np.ndarray:
     matrix = np.empty(9, dtype=np.float64)
     mujoco.mju_quat2Mat(matrix, quaternion)
@@ -444,7 +641,9 @@ class WholeBodyCatchSim:
         seed: int = 42,
         episode_length_s: float = 8.0,
         hold_time_s: float = 1.0,
+        policy_contract: PolicyContract = LEGACY_POLICY_CONTRACT,
     ) -> None:
+        self.contract = policy_contract
         self.model_path = model_path.expanduser().resolve()
         if not self.model_path.is_file():
             raise FileNotFoundError(f"MuJoCo 模型不存在: {self.model_path}")
@@ -460,16 +659,36 @@ class WholeBodyCatchSim:
                 f"MuJoCo timestep={self.model.opt.timestep}，策略要求 {PHYSICS_DT}"
             )
 
-        # The training asset explicitly uses the following actuator effort
-        # limits.  Override the lower hardware-oriented limits in the public
-        # MJCF; the PD output is clipped to the same values below.
+        # Preserve all compatibility joints in the MJCF, but make the active
+        # first 23 joints use the exact fixed-hand IsaacLab gains and limits
+        # when a 108/23 policy is loaded.
+        self.control_stiffness = PD_STIFFNESS.copy()
+        self.control_damping = PD_DAMPING.copy()
+        self.control_effort = EFFORT_LIMIT.copy()
+        active = slice(0, self.contract.action_dim)
+        self.control_stiffness[active] = self.contract.pd_stiffness
+        self.control_damping[active] = self.contract.pd_damping
+        self.control_effort[active] = self.contract.effort_limit
+        if self.contract is FIXED_HAND_POLICY_CONTRACT:
+            # Hidden legacy finger bodies have no visual or collision role.
+            # Keep their joints near the nominal pose without giving them the
+            # unrealistically large legacy arm effort limit.
+            self.control_effort[FIXED_HAND_ACTION_INDICES] = 0.7
+            for site_id in (
+                self.bindings.left_palm_site_id,
+                self.bindings.right_palm_site_id,
+            ):
+                self.model.site_pos[site_id, 0] = self.contract.hand_center_offset
+
+        # Override MJCF motor ranges with the selected IsaacLab actuator
+        # limits; PD output is clipped to the same limits below.
         for actuator_id, limit in zip(
-            self.bindings.actuator_ids, EFFORT_LIMIT, strict=True
+            self.bindings.actuator_ids, self.control_effort, strict=True
         ):
             self.model.actuator_ctrlrange[actuator_id] = (-limit, limit)
             self.model.actuator_ctrllimited[actuator_id] = 1
 
-        self.last_action = np.zeros(ACTION_DIM, dtype=np.float64)
+        self.last_action = np.zeros(self.contract.action_dim, dtype=np.float64)
         self.position_target = DEFAULT_JOINT_POS.copy()
         self.contact_history: deque[tuple[float, float]] = deque(maxlen=3)
         self.active_box_index = 0
@@ -540,7 +759,8 @@ class WholeBodyCatchSim:
         root_position = self.data.xpos[self.bindings.root_body_id].copy()
         target = root_position.copy()
         target[:2] += self.rng.uniform(-0.08, 0.08, size=2)
-        target[2] += self.rng.uniform(0.22, 0.42)
+        minimum_target_height = 0.20 if self.contract.upright_launch else 0.22
+        target[2] += self.rng.uniform(minimum_target_height, 0.42)
 
         azimuth = self.rng.uniform(-0.22, 0.22)
         distance = self.rng.uniform(1.0, 1.45)
@@ -553,7 +773,11 @@ class WholeBodyCatchSim:
         linear_velocity = (target - spawn) / flight_time
         linear_velocity[2] -= 0.5 * -9.81 * flight_time
         angular_velocity = self.rng.uniform(-1.5, 1.5, size=3)
-        orientation = _random_quaternion(self.rng)
+        if self.contract.upright_launch:
+            orientation_rpy = self.rng.uniform(-0.22, 0.22, size=3)
+            orientation = _euler_xyz_to_quaternion(*orientation_rpy)
+        else:
+            orientation = _random_quaternion(self.rng)
 
         self.active_box_index = int(self.rng.integers(len(BOX_SPECS)))
         box = self.bindings.boxes[self.active_box_index]
@@ -658,21 +882,23 @@ class WholeBodyCatchSim:
         )
 
         hand_contacts = np.clip(self._recent_hand_forces() / 25.0, 0.0, 2.0)
+        policy_joint_indices = slice(0, self.contract.action_dim)
+        policy_qpos_adrs = self.bindings.qpos_adrs[policy_joint_indices]
+        policy_dof_adrs = self.bindings.dof_adrs[policy_joint_indices]
         joint_pos = np.clip(
-            self.data.qpos[self.bindings.qpos_adrs] - DEFAULT_JOINT_POS,
+            self.data.qpos[policy_qpos_adrs] - self.contract.default_joint_pos,
             -3.0,
             3.0,
         )
         # IsaacLab applies clip before scale for an observation term.
-        joint_vel = np.clip(
-            self.data.qvel[self.bindings.dof_adrs], -10.0, 10.0
-        ) * 0.1
+        joint_vel = np.clip(self.data.qvel[policy_dof_adrs], -10.0, 10.0) * 0.1
         return {
             "base_lin_vel": base_lin_vel,
             "base_ang_vel": base_ang_vel,
             "projected_gravity": projected_gravity,
             "box_state": box_state,
             "palm_box_kinematics": palm_box_kinematics,
+            "hand_box_kinematics": palm_box_kinematics,
             "hand_contacts": hand_contacts,
             "joint_pos": joint_pos,
             "joint_vel": joint_vel,
@@ -681,10 +907,10 @@ class WholeBodyCatchSim:
 
     def observation(self) -> np.ndarray:
         parts = self.observation_parts()
-        observation = np.concatenate([parts[name] for name, _ in OBSERVATION_TERMS]).astype(
-            np.float32, copy=False
-        )
-        if observation.shape != (OBSERVATION_DIM,):
+        observation = np.concatenate(
+            [parts[name] for name, _ in self.contract.observation_terms]
+        ).astype(np.float32, copy=False)
+        if observation.shape != (self.contract.observation_dim,):
             raise RuntimeError(f"观测拼接错误: {observation.shape}")
         if not np.all(np.isfinite(observation)):
             raise FloatingPointError("MuJoCo 观测出现 NaN/Inf")
@@ -693,8 +919,11 @@ class WholeBodyCatchSim:
     def _apply_pd_control(self) -> None:
         joint_pos = self.data.qpos[self.bindings.qpos_adrs]
         joint_vel = self.data.qvel[self.bindings.dof_adrs]
-        torque = PD_STIFFNESS * (self.position_target - joint_pos) - PD_DAMPING * joint_vel
-        torque = np.clip(torque, -EFFORT_LIMIT, EFFORT_LIMIT)
+        torque = (
+            self.control_stiffness * (self.position_target - joint_pos)
+            - self.control_damping * joint_vel
+        )
+        torque = np.clip(torque, -self.control_effort, self.control_effort)
         self.data.ctrl[self.bindings.actuator_ids] = torque
 
     def _sample_hand_forces(self) -> tuple[float, float]:
@@ -729,7 +958,7 @@ class WholeBodyCatchSim:
         box_pos, _, box_lin_w, _ = self._box_kinematics()
         palm_pos, palm_lin_w = self._palm_kinematics()
         lateral_axis_w = root_rotation[:, 1]
-        clearance = BOX_SPECS[self.active_box_index].half_width + 0.025
+        clearance = BOX_SPECS[self.active_box_index].half_width + self.contract.target_clearance
         targets = np.stack(
             (box_pos + lateral_axis_w * clearance, box_pos - lateral_axis_w * clearance)
         )
@@ -739,13 +968,13 @@ class WholeBodyCatchSim:
         projected_gravity = root_rotation.T @ np.asarray((0.0, 0.0, -1.0))
         tilt = math.acos(float(np.clip(-projected_gravity[2], -1.0, 1.0)))
         return bool(
-            left_force > 2.0
-            and right_force > 2.0
-            and float(np.max(target_distances)) < 0.22
-            and relative_speed < 0.75
-            and box_pos[2] > 0.55
-            and tilt < 0.55
-            and root_pos[2] > 0.60
+            left_force > self.contract.force_threshold
+            and right_force > self.contract.force_threshold
+            and float(np.max(target_distances)) < self.contract.max_hand_distance
+            and relative_speed < self.contract.max_relative_speed
+            and box_pos[2] > self.contract.min_box_height
+            and tilt < self.contract.max_robot_tilt
+            and root_pos[2] > self.contract.min_root_height
         )
 
     def termination_reason(self) -> str | None:
@@ -769,9 +998,9 @@ class WholeBodyCatchSim:
             return "box_out_of_reach"
         projected_gravity = root_rotation.T @ np.asarray((0.0, 0.0, -1.0))
         tilt = math.acos(float(np.clip(-projected_gravity[2], -1.0, 1.0)))
-        if tilt > 0.80:
+        if tilt > self.contract.termination_tilt:
             return "bad_orientation"
-        if root_pos[2] < 0.52:
+        if root_pos[2] < self.contract.termination_root_height:
             return "root_too_low"
         if self.episode_time >= self.episode_length_s:
             return "time_out"
@@ -779,15 +1008,23 @@ class WholeBodyCatchSim:
 
     def step(self, action: np.ndarray) -> str | None:
         action = np.asarray(action, dtype=np.float64)
-        if action.shape != (ACTION_DIM,):
+        if action.shape != (self.contract.action_dim,):
             raise ValueError(f"action 形状错误: {action.shape}")
         if not np.all(np.isfinite(action)):
             raise FloatingPointError("action 出现 NaN/Inf")
         self.last_action[:] = action
-        self.position_target[:] = DEFAULT_JOINT_POS + ACTION_SCALE * action
-        self.position_target[FIXED_HAND_ACTION_INDICES] = DEFAULT_JOINT_POS[
-            FIXED_HAND_ACTION_INDICES
-        ]
+        active = slice(0, self.contract.action_dim)
+        self.position_target[active] = (
+            self.contract.default_joint_pos + self.contract.action_scale * action
+        )
+        if self.contract.action_dim < ACTION_DIM:
+            self.position_target[self.contract.action_dim :] = DEFAULT_JOINT_POS[
+                self.contract.action_dim :
+            ]
+        else:
+            self.position_target[FIXED_HAND_ACTION_INDICES] = DEFAULT_JOINT_POS[
+                FIXED_HAND_ACTION_INDICES
+            ]
 
         for _ in range(POLICY_DECIMATION):
             self._apply_pd_control()
@@ -832,16 +1069,19 @@ def _print_contract(
         print(f"[INFO] policy: {policy.path} ({policy.kind}, device={policy.device})")
     else:
         print("[INFO] policy: zero-action controller")
+    print(f"[INFO] policy contract: {sim.contract.label}")
     clip_description = "disabled" if action_clip <= 0.0 else f"[-{action_clip:g}, {action_clip:g}]"
     print(f"[INFO] policy action clip: {clip_description}")
-    print("[INFO] hand model: fixed black rubber hands (legacy finger actions ignored)")
+    print("[INFO] hand model: fixed black rubber hands (legacy finger bodies hidden)")
     print(
-        f"[INFO] observation={OBSERVATION_DIM}, action={ACTION_DIM}, "
+        f"[INFO] observation={sim.contract.observation_dim}, "
+        f"action={sim.contract.action_dim}, "
         f"physics={1.0 / PHYSICS_DT:.0f} Hz, policy={1.0 / POLICY_DT:.0f} Hz"
     )
     print("[INFO] observation layout: " + ", ".join(
-        f"{name}[{OBSERVATION_SLICES[name].start}:{OBSERVATION_SLICES[name].stop}]"
-        for name, _ in OBSERVATION_TERMS
+        f"{name}[{sim.contract.observation_slices[name].start}:"
+        f"{sim.contract.observation_slices[name].stop}]"
+        for name, _ in sim.contract.observation_terms
     ))
 
 
@@ -854,6 +1094,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="RSL-RL model_*.pt 或 play.py 导出的 policy.pt；默认自动选择最新 checkpoint",
+    )
+    parser.add_argument(
+        "--policy-contract",
+        choices=("auto", "legacy", "fixed-hand"),
+        default="auto",
+        help="策略接口；默认从 checkpoint 的输入/输出维度自动识别",
     )
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL_PATH, help="MuJoCo scene.xml")
     parser.add_argument("--device", default="cpu", help="PyTorch 推理设备，默认 cpu")
@@ -870,7 +1116,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-policy-steps", type=int, default=0, help="达到策略步数后退出；用于冒烟测试"
     )
     parser.add_argument("--episode-length", type=float, default=8.0)
-    parser.add_argument("--hold-time", type=float, default=1.0)
+    parser.add_argument(
+        "--hold-time",
+        type=float,
+        default=None,
+        help="判定抓住需要连续保持的秒数；默认 legacy=1.0、fixed-hand=0.8",
+    )
     parser.add_argument("--log-interval", type=float, default=1.0)
     parser.add_argument(
         "--real-time",
@@ -896,7 +1147,7 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("--action-clip 必须是有限的非负数")
     if args.max_episodes < 0 or args.max_policy_steps < 0:
         raise ValueError("--max-episodes/--max-policy-steps 不能为负数")
-    if args.episode_length <= 0.0 or args.hold_time <= 0.0:
+    if args.episode_length <= 0.0 or (args.hold_time is not None and args.hold_time <= 0.0):
         raise ValueError("--episode-length/--hold-time 必须为正数")
 
     policy: TorchPolicy | None
@@ -906,16 +1157,34 @@ def run(args: argparse.Namespace) -> int:
         policy_path = args.checkpoint if args.checkpoint is not None else find_latest_checkpoint()
         policy = TorchPolicy(policy_path, device=args.device)
 
+    if args.policy_contract == "auto":
+        contract = policy.contract if policy is not None else LEGACY_POLICY_CONTRACT
+    else:
+        contract = POLICY_CONTRACTS_BY_KEY[args.policy_contract]
+        if policy is not None and policy.contract is not contract:
+            raise ValueError(
+                f"--policy-contract={contract.key} 与 checkpoint 的 "
+                f"{policy.contract.observation_dim}/{policy.contract.action_dim} 维度不匹配"
+            )
+    hold_time = args.hold_time
+    if hold_time is None:
+        hold_time = 0.8 if contract is FIXED_HAND_POLICY_CONTRACT else 1.0
+
     sim = WholeBodyCatchSim(
         args.model,
         seed=args.seed,
         episode_length_s=args.episode_length,
-        hold_time_s=args.hold_time,
+        hold_time_s=hold_time,
+        policy_contract=contract,
     )
     _print_contract(sim, policy, args.action_clip)
     if args.dry_run:
         observation = sim.observation()
-        raw_action = np.zeros(ACTION_DIM) if policy is None else policy(observation)
+        raw_action = (
+            np.zeros(contract.action_dim, dtype=np.float64)
+            if policy is None
+            else policy(observation)
+        )
         action = clip_policy_action(raw_action, args.action_clip)
         print(
             f"[INFO] dry-run OK: obs_norm={np.linalg.norm(observation):.3f}, "
@@ -976,7 +1245,9 @@ def run(args: argparse.Namespace) -> int:
             loop_start = time.perf_counter()
             observation = sim.observation()
             raw_action = (
-                np.zeros(ACTION_DIM, dtype=np.float64) if policy is None else policy(observation)
+                np.zeros(contract.action_dim, dtype=np.float64)
+                if policy is None
+                else policy(observation)
             )
             action = clip_policy_action(raw_action, args.action_clip)
             reason = sim.step(action)

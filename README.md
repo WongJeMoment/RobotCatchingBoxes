@@ -365,7 +365,7 @@ mkdir -p logs/rsl_rl/unitree_g1_fixed_hand_whole_body_catch_box/warm_start
 
 ## 11. Isaac Sim 到 MuJoCo 的 sim2sim
 
-仓库内置了全身接箱策略的 MuJoCo runner。它不启动 Isaac Sim，而是在 MuJoCo 中复现训练时的 150 维观测、37 维动作、关节顺序、PD 增益、三种随机投掷箱体和 episode 终止条件。物理步长为 0.005 秒，策略每 4 个物理步执行一次，即 50 Hz。
+仓库内置了全身接箱策略的 MuJoCo runner。它不启动 Isaac Sim，并会根据 checkpoint 自动识别旧任务的 150 维观测/37 维动作，或黑色固定手任务的 108 维观测/23 维动作。两种接口分别复现对应的关节顺序、PD 增益、动作尺度、投掷分布和 episode 终止条件。物理步长为 0.005 秒，策略每 4 个物理步执行一次，即 50 Hz。
 
 建议单独使用轻量的 MuJoCo 环境，避免改动已经配置好的 Isaac Lab 环境：
 
@@ -375,35 +375,44 @@ conda activate g1_sim2sim
 python -m pip install -e ".[sim2sim]"
 ```
 
-使用本项目中的 `model_2999.pt` 打开 MuJoCo viewer：
+使用黑色固定手训练完成的 checkpoint 打开 MuJoCo viewer：
+
+```bash
+python scripts/sim2sim_mujoco.py \
+  --checkpoint "$(pwd)/logs/rsl_rl/unitree_g1_fixed_hand_whole_body_catch_box/2026-09-02_20-05-32_ppo/model_4999.pt" \
+  --hold-time 0.8
+```
+
+旧的 150/37 checkpoint 仍可直接运行：
 
 ```bash
 python scripts/sim2sim_mujoco.py \
   --checkpoint "$(pwd)/logs/rsl_rl/unitree_g1_whole_body_catch_box/2026-08-30_21-01-43_ppo/model_2999.pt"
 ```
 
-runner 可以直接加载 RSL-RL 的 `model_*.pt`，也可以加载 `play.py` 导出的 `exported/policy.pt`。不传 `--checkpoint` 时，会自动选择 `logs/rsl_rl/unitree_g1_whole_body_catch_box/` 下时间最新一次运行的最大迭代 checkpoint。viewer 中按 `R` 可重新投掷并复位。
+runner 可以直接加载 RSL-RL 的 `model_*.pt`，也可以加载 `play.py` 导出的 `exported/policy.pt`。`--policy-contract auto` 是默认值，会从网络的输入/输出维度自动选择接口；也可显式指定 `legacy` 或 `fixed-hand`。不传 `--checkpoint` 时，仍会自动选择旧任务日志目录下时间最新的 checkpoint。viewer 中按 `R` 可重新投掷并复位。
 
-为避免未限幅的 PPO 输出把脚踝直接推到机械限位，runner 默认将策略动作限制在 `[-1, 1]`，并使用与 Isaac G1 USD 相同尺寸和局部位姿的鞋底碰撞盒。若要严格复现本次训练中 `clip_actions: null` 的原始动作语义，可添加 `--action-clip 0`；该 checkpoint 的首帧腿部动作幅值可超过 5，关闭限幅时 MuJoCo 中的脚踝可能迅速失稳。
+runner 默认将策略动作限制在 `[-1, 1]`，并使用与 Isaac 任务相同尺寸和局部位姿的鞋底碰撞盒。固定手任务训练时也是此限幅；旧 checkpoint 若要复现训练时 `clip_actions: null` 的原始动作语义，可添加 `--action-clip 0`，但它的腿部动作可能迅速导致脚踝失稳。
 
-MuJoCo 机器人使用 Unitree 官方 23-DoF G1 的黑色固定橡胶假手。为了仍能加载已有的 37 维 checkpoint，旧手指关节仅作为隐藏兼容自由度保留：它们不渲染、不参与碰撞，策略的 14 个手指动作也不会驱动它们。现有 `model_2999.pt` 是用可动手指模型训练的，而且在 Isaac Sim 对照测试中也未完成接箱；固定手版本要获得可靠接箱能力，需要用相同固定手碰撞模型重新训练，不能把旧 checkpoint 的成功率作为新手模型的最终效果。
+MuJoCo 机器人使用黑色固定橡胶假手。兼容 MJCF 内仍保留历史手指关节，但它们不渲染、不参与碰撞：固定手策略只能观察和控制前 23 个物理关节，旧策略的 14 个手指动作也会被忽略。固定手接口还会切换到训练时的 Unitree 力矩限制、腕部中心偏移、小角度箱体姿态和更严格的站立抓取阈值。
 
 无窗口服务器先执行契约检查和短时冒烟测试：
 
 ```bash
 python scripts/sim2sim_mujoco.py \
-  --checkpoint /absolute/path/to/model_2999.pt \
+  --checkpoint /absolute/path/to/model_4999.pt \
   --dry-run
 
 python scripts/sim2sim_mujoco.py \
-  --checkpoint /absolute/path/to/model_2999.pt \
+  --checkpoint /absolute/path/to/model_4999.pt \
   --headless --duration 8
 ```
 
 只检查 MuJoCo 模型和 PD 站立、不运行神经网络时使用：
 
 ```bash
-python scripts/sim2sim_mujoco.py --zero-action --headless --duration 8
+python scripts/sim2sim_mujoco.py \
+  --zero-action --policy-contract fixed-hand --headless --duration 8
 ```
 
 运行自动测试：

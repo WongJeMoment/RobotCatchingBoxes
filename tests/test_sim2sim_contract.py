@@ -17,6 +17,14 @@ from g1_locomotion.sim2sim.whole_body_catch import (
     DEFAULT_MODEL_PATH,
     EFFORT_LIMIT,
     FIXED_HAND_ACTION_INDICES,
+    FIXED_HAND_ACTION_DIM,
+    FIXED_HAND_ACTION_SCALE,
+    FIXED_HAND_DEFAULT_JOINT_POS,
+    FIXED_HAND_EFFORT_LIMIT,
+    FIXED_HAND_OBSERVATION_DIM,
+    FIXED_HAND_OBSERVATION_SLICES,
+    FIXED_HAND_POLICY_CONTRACT,
+    FIXED_HAND_POLICY_JOINT_NAMES,
     OBSERVATION_DIM,
     OBSERVATION_SLICES,
     POLICY_JOINT_NAMES,
@@ -121,6 +129,54 @@ class Sim2SimContractTest(unittest.TestCase):
         ]
         self.assertEqual(active_boxes, [sim.active_box_index])
 
+    def test_fixed_hand_policy_contract_and_actuator_mapping(self) -> None:
+        self.assertEqual(len(FIXED_HAND_POLICY_JOINT_NAMES), FIXED_HAND_ACTION_DIM)
+        self.assertEqual(len(set(FIXED_HAND_POLICY_JOINT_NAMES)), FIXED_HAND_ACTION_DIM)
+        self.assertEqual(
+            FIXED_HAND_OBSERVATION_SLICES,
+            {
+                "base_lin_vel": slice(0, 3),
+                "base_ang_vel": slice(3, 6),
+                "projected_gravity": slice(6, 9),
+                "box_state": slice(9, 25),
+                "hand_box_kinematics": slice(25, 37),
+                "hand_contacts": slice(37, 39),
+                "joint_pos": slice(39, 62),
+                "joint_vel": slice(62, 85),
+                "actions": slice(85, 108),
+            },
+        )
+
+        sim = WholeBodyCatchSim(
+            DEFAULT_MODEL_PATH,
+            seed=7,
+            policy_contract=FIXED_HAND_POLICY_CONTRACT,
+        )
+        observation = sim.observation()
+        self.assertEqual(observation.shape, (FIXED_HAND_OBSERVATION_DIM,))
+        self.assertTrue(np.all(np.isfinite(observation)))
+        actuator_limits = sim.model.actuator_ctrlrange[
+            sim.bindings.actuator_ids[:FIXED_HAND_ACTION_DIM], 1
+        ]
+        np.testing.assert_allclose(actuator_limits, FIXED_HAND_EFFORT_LIMIT)
+        np.testing.assert_allclose(
+            sim.model.site_pos[
+                [sim.bindings.left_palm_site_id, sim.bindings.right_palm_site_id], 0
+            ],
+            0.108,
+        )
+
+        action = np.ones(FIXED_HAND_ACTION_DIM, dtype=np.float64)
+        sim.step(action)
+        np.testing.assert_allclose(
+            sim.position_target[:FIXED_HAND_ACTION_DIM],
+            FIXED_HAND_DEFAULT_JOINT_POS + FIXED_HAND_ACTION_SCALE,
+        )
+        np.testing.assert_allclose(
+            sim.position_target[FIXED_HAND_ACTION_DIM:],
+            DEFAULT_JOINT_POS[FIXED_HAND_ACTION_DIM:],
+        )
+
     def test_fixed_hand_ignores_legacy_finger_actions(self) -> None:
         sim = WholeBodyCatchSim(DEFAULT_MODEL_PATH, seed=7)
         action = np.zeros(ACTION_DIM, dtype=np.float64)
@@ -172,6 +228,27 @@ class Sim2SimContractTest(unittest.TestCase):
             torch.save({"model_state_dict": state}, path)
             with self.assertRaisesRegex(ValueError, "策略维度"):
                 TorchPolicy(path)
+
+    def test_fixed_hand_checkpoint_is_detected_from_dimensions(self) -> None:
+        state = {
+            "actor.0.weight": torch.zeros(
+                (FIXED_HAND_ACTION_DIM, FIXED_HAND_OBSERVATION_DIM)
+            ),
+            "actor.0.bias": torch.zeros(FIXED_HAND_ACTION_DIM),
+            "actor_obs_normalizer._mean": torch.zeros(
+                (1, FIXED_HAND_OBSERVATION_DIM)
+            ),
+            "actor_obs_normalizer._std": torch.ones(
+                (1, FIXED_HAND_OBSERVATION_DIM)
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temp_directory:
+            path = Path(temp_directory) / "fixed_hand_model.pt"
+            torch.save({"model_state_dict": state}, path)
+            policy = TorchPolicy(path)
+            self.assertIs(policy.contract, FIXED_HAND_POLICY_CONTRACT)
+            action = policy(np.zeros(FIXED_HAND_OBSERVATION_DIM, dtype=np.float32))
+            self.assertEqual(action.shape, (FIXED_HAND_ACTION_DIM,))
 
     def test_local_checkpoint_matches_exported_jit(self) -> None:
         try:

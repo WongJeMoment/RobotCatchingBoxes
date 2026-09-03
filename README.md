@@ -312,6 +312,8 @@ tensorboard --logdir logs/rsl_rl/unitree_g1_catch_box --port 6006
 
 这一任务同时针对两个已知问题做了调整：脚底从四个 5 mm 点接触改为完整鞋底碰撞盒；前 20000 个控制步不抛箱，让策略先学习站立与恢复步，之后再从慢速、正向、0.5 kg 小箱开始，逐步扩大方位、速度、旋转，并在接箱课程 25% 和 65% 时加入中箱和 3 kg 大箱。奖励会依次给手部靠近、单手接触、双手夹持和稳定保持提供梯度，并要求双脚支撑、低足底滑移、正常基座高度和小倾角。成功终止不再受到通用失败惩罚。
 
+为解决“抓住箱子后脚乱动”，固定手策略的抓取判定保持时间设为 0.8 秒；这段时间内新增 `post_catch_stability` 奖励，同时抑制双脚、下肢关节和机身速度。下肢动作尺度也改为分关节设置，脚踝残差降到 0.05，髋部和膝部仍保留吸收冲击所需的恢复能力。训练日志中应重点观察 `Episode_Reward/post_catch_stability`、`Episode_Reward/feet_slide`、`Episode_Reward/both_feet_contact` 以及 `Episode_Termination/box_caught`、`bad_orientation` 和 `root_too_low`。
+
 先跑两次 PPO 迭代验证整个训练链路：
 
 ```bash

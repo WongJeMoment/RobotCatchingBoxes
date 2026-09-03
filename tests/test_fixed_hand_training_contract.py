@@ -71,6 +71,23 @@ class FixedHandTrainingContractTest(unittest.TestCase):
         self.assertIn("G1FixedHandWholeBodyCatchBoxPPORunnerCfg", agent_cfg)
         self.assertIn("self.clip_actions = 1.0", agent_cfg)
 
+    def test_post_catch_stability_contract_is_declared(self) -> None:
+        env_cfg = (
+            PROJECT_ROOT / "source/g1_locomotion/tasks/velocity/g1_env_cfg.py"
+        ).read_text()
+        mdp_init = (
+            PROJECT_ROOT / "source/g1_locomotion/tasks/velocity/mdp/__init__.py"
+        ).read_text()
+        catch_mdp = (
+            PROJECT_ROOT / "source/g1_locomotion/tasks/velocity/mdp/catch_box.py"
+        ).read_text()
+        self.assertIn("post_catch_stability = RewTerm", env_cfg)
+        self.assertIn('"hold_time_s": 0.80', env_cfg)
+        self.assertIn('".*_ankle_pitch_joint": 0.05', env_cfg)
+        self.assertIn('".*_ankle_roll_joint": 0.05', env_cfg)
+        self.assertIn("post_catch_lower_body_stability", mdp_init)
+        self.assertIn("def post_catch_lower_body_stability", catch_mdp)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -176,6 +176,12 @@ def _fixed_feet_sensor_cfg() -> SceneEntityCfg:
     )
 
 
+def _fixed_feet_body_cfg() -> SceneEntityCfg:
+    return SceneEntityCfg(
+        "robot", body_names=".*_ankle_roll_link", preserve_order=True
+    )
+
+
 @configclass
 class CatchBoxEventsCfg(VelocityEventCfg):
     """Launch one front-facing projectile whenever an episode resets."""
@@ -916,7 +922,17 @@ class G1FixedHandWholeBodyActionsCfg:
     lower_body = base_mdp.JointPositionActionCfg(
         asset_name="robot",
         joint_names=_FIXED_HAND_LOWER_JOINT_NAMES,
-        scale=0.25,
+        # Keep enough hip/knee authority to absorb the catch impulse, while
+        # sharply reducing ankle residuals that otherwise appear as restless
+        # foot shuffling once the box is secured.
+        scale={
+            ".*_hip_pitch_joint": 0.15,
+            ".*_hip_roll_joint": 0.10,
+            ".*_hip_yaw_joint": 0.10,
+            ".*_knee_joint": 0.15,
+            ".*_ankle_pitch_joint": 0.05,
+            ".*_ankle_roll_joint": 0.05,
+        },
         use_default_offset=True,
         preserve_order=True,
     )
@@ -1090,6 +1106,29 @@ class G1FixedHandCatchRewardsCfg(G1WholeBodyCatchRewardsCfg):
         weight=1.5,
         params={"sensor_cfg": _fixed_feet_sensor_cfg(), "force_threshold": 20.0},
     )
+    post_catch_stability = RewTerm(
+        func=mdp.post_catch_lower_body_stability,
+        weight=10.0,
+        params={
+            "collection_name": "throw_boxes",
+            "robot_cfg": _fixed_hand_body_cfg(),
+            "lower_body_cfg": _fixed_hand_lower_joint_cfg(),
+            "feet_cfg": _fixed_feet_body_cfg(),
+            "left_sensor_cfg": _fixed_left_hand_sensor_cfg(),
+            "right_sensor_cfg": _fixed_right_hand_sensor_cfg(),
+            "force_threshold": 1.5,
+            "max_hand_distance": 0.18,
+            "max_relative_speed": 0.80,
+            "min_height": 0.52,
+            "hand_center_offset": _FIXED_HAND_CENTER_OFFSET,
+            "max_robot_tilt": 0.50,
+            "min_root_height": 0.58,
+            "foot_velocity_std": 0.08,
+            "joint_velocity_std": 0.20,
+            "root_linear_velocity_std": 0.15,
+            "root_angular_velocity_std": 0.30,
+        },
+    )
     base_height = RewTerm(
         func=base_mdp.base_height_l2,
         weight=-8.0,
@@ -1129,7 +1168,9 @@ class G1FixedHandCatchTerminationsCfg(G1WholeBodyCatchTerminationsCfg):
             "robot_cfg": _fixed_hand_body_cfg(),
             "left_sensor_cfg": _fixed_left_hand_sensor_cfg(),
             "right_sensor_cfg": _fixed_right_hand_sensor_cfg(),
-            "hold_time_s": 0.25,
+            # Give the policy time to settle its feet after contact instead of
+            # ending the episode immediately on the first valid clamp.
+            "hold_time_s": 0.80,
             "force_threshold": 1.5,
             "max_hand_distance": 0.18,
             "max_relative_speed": 0.80,
@@ -1180,7 +1221,7 @@ class G1FixedHandWholeBodyCatchBoxEnvCfg(G1WholeBodyCatchBoxEnvCfg):
         self.rewards.lin_vel_z_l2.weight = -1.0
         self.rewards.ang_vel_xy_l2.weight = -0.50
         self.rewards.flat_orientation_l2.weight = -6.0
-        self.rewards.feet_slide.weight = -0.50
+        self.rewards.feet_slide.weight = -1.0
 
         stable_catch = {"max_robot_tilt": 0.50, "min_root_height": 0.58}
         self.rewards.catch_success.params.update(stable_catch)

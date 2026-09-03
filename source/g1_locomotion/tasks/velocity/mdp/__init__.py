@@ -16,6 +16,7 @@ from .catch_box import (
     hand_target_proximity,
     palm_box_kinematics_b,
     palm_box_velocity_match,
+    post_catch_lower_body_stability,
 )
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     "hand_target_proximity",
     "palm_box_kinematics_b",
     "palm_box_velocity_match",
+    "post_catch_lower_body_stability",
     "park_throw_boxes",
     "throw_random_box",
     "throw_curriculum_box",

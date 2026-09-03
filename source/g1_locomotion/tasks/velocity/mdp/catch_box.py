@@ -265,6 +265,75 @@ def bilateral_foot_contact(
     return scores.amin(dim=1)
 
 
+def post_catch_lower_body_stability(
+    env: ManagerBasedRLEnv,
+    collection_name: str,
+    robot_cfg: SceneEntityCfg,
+    lower_body_cfg: SceneEntityCfg,
+    feet_cfg: SceneEntityCfg,
+    left_sensor_cfg: SceneEntityCfg,
+    right_sensor_cfg: SceneEntityCfg,
+    force_threshold: float = 1.5,
+    max_hand_distance: float = 0.18,
+    max_relative_speed: float = 0.80,
+    min_height: float = 0.52,
+    hand_center_offset: float = 0.0,
+    max_robot_tilt: float | None = None,
+    min_root_height: float | None = None,
+    foot_velocity_std: float = 0.08,
+    joint_velocity_std: float = 0.20,
+    root_linear_velocity_std: float = 0.15,
+    root_angular_velocity_std: float = 0.30,
+) -> torch.Tensor:
+    """Reward staying still after a valid two-handed catch.
+
+    ``feet_slide`` only sees feet that are already in contact with the ground,
+    so it cannot discourage a small stepping motion after the box is caught.
+    This term is gated by the same physically valid catch condition used by the
+    success termination and damps foot, lower-body and root velocities only in
+    that post-catch state.  Before contact, the policy remains free to move its
+    legs to intercept the box.
+    """
+    stable_catch = _catch_condition(
+        env,
+        collection_name,
+        robot_cfg,
+        left_sensor_cfg,
+        right_sensor_cfg,
+        force_threshold,
+        max_hand_distance,
+        max_relative_speed,
+        min_height,
+        hand_center_offset,
+        max_robot_tilt,
+        min_root_height,
+    ).float()
+
+    robot: Articulation = env.scene[robot_cfg.name]
+    feet_velocity = robot.data.body_link_lin_vel_w[:, feet_cfg.body_ids]
+    foot_speed_score = torch.exp(
+        -torch.mean(torch.square(feet_velocity), dim=(1, 2))
+        / (foot_velocity_std**2)
+    )
+
+    # Lower-body joint damping gives the policy a controllable target even if a
+    # foot briefly loses contact during the catch impulse.
+    joint_velocity = robot.data.joint_vel[:, lower_body_cfg.joint_ids]
+    joint_speed_score = torch.exp(
+        -torch.mean(torch.square(joint_velocity), dim=1) / (joint_velocity_std**2)
+    )
+
+    root_linear_velocity = robot.data.root_lin_vel_w[:, :2]
+    root_angular_velocity = robot.data.root_ang_vel_w
+    root_speed_score = torch.exp(
+        -torch.sum(torch.square(root_linear_velocity), dim=1)
+        / (root_linear_velocity_std**2)
+        -torch.sum(torch.square(root_angular_velocity), dim=1)
+        / (root_angular_velocity_std**2)
+    )
+    return stable_catch * foot_speed_score * joint_speed_score * root_speed_score
+
+
 def box_held_above_ground(
     env: ManagerBasedRLEnv,
     min_height: float,
